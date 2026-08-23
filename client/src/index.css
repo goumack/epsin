@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply bg-slate-50 text-slate-800 antialiased;
+    @apply dark:bg-slate-950 dark:text-slate-200;
+  }
+  /* Barres de defilement discretes */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { @apply bg-transparent; }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-slate-300 dark:bg-slate-700 rounded-full border-2 border-solid border-transparent bg-clip-content;
+  }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-slate-400 dark:bg-slate-600; }
+}
+
+@layer components {
+  .carte {
+    @apply bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800
+           shadow-sm transition-shadow hover:shadow-md;
+  }
+  .champ {
+    @apply w-full rounded-lg border border-slate-300 dark:border-slate-700
+           bg-white dark:bg-slate-900 px-3 py-2 text-sm
+           placeholder:text-slate-400
+           focus:outline-none focus:ring-2 focus:ring-marine-500 focus:border-transparent
+           disabled:opacity-60 disabled:cursor-not-allowed transition;
+  }
+  .etiquette {
+    @apply block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5;
+  }
+  .bouton {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2
+           text-sm font-medium transition-all active:scale-[0.98]
+           disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100;
+  }
+  .bouton-primaire {
+    @apply bouton bg-marine-600 text-white hover:bg-marine-700
+           focus:outline-none focus:ring-2 focus:ring-marine-500 focus:ring-offset-2
+           dark:focus:ring-offset-slate-950;
+  }
+  .bouton-secondaire {
+    @apply bouton border border-slate-300 dark:border-slate-700
+           bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800;
+  }
+  .bouton-danger {
+    @apply bouton bg-red-600 text-white hover:bg-red-700;
+  }
+  .puce {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
+  }
+  .tableau {
+    @apply w-full text-sm text-left;
+  }
+  .tableau thead th {
+    @apply px-4 py-3 font-semibold text-slate-600 dark:text-slate-400
+           bg-slate-50 dark:bg-slate-900/50 whitespace-nowrap;
+  }
+  .tableau tbody td {
+    @apply px-4 py-3 border-t border-slate-100 dark:border-slate-800;
+  }
+  .tableau tbody tr {
+    @apply hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors;
+  }
+}
+
+/* Animations d entree, courtes pour rester fluides */
+@keyframes apparition {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animer { animation: apparition 0.25s ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

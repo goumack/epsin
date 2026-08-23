@@ -1,0 +1,25 @@
+# Dependances
+node_modules/
+
+# Secrets — ne doivent JAMAIS partir sur GitHub
+.env
+.env.*
+!.env.example
+
+# Build
+dist/
+build/
+
+# Journaux et fichiers temporaires
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Editeurs
+.vscode/
+.idea/
+
+# Captures et fichiers de travail
+captures/
+*.tmp

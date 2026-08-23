@@ -1,0 +1,71 @@
+# ============================================================
+# EPSIN — Deploiement Render
+#
+# Deux services :
+#   epsin-api    Node/Express, connecte a une base Neon
+#   epsin-web    Site statique servant l interface React
+#
+# La base de donnees n est PAS declaree ici : elle est hebergee sur Neon
+# (neon.tech). Son URL de connexion est fournie via la variable
+# DATABASE_URL, saisie dans le tableau de bord Render.
+# ============================================================
+
+services:
+  # ---------- API ----------
+  - type: web
+    name: epsin-api
+    runtime: node
+    plan: free
+    region: frankfurt          # le plus proche du Senegal parmi les regions Render
+    rootDir: server
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/sante
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Connexion Neon : a coller depuis le tableau de bord Neon.
+      # Neon impose SSL, d ou DATABASE_SSL=true.
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+      # Genere automatiquement par Render : jamais commite, jamais visible.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES
+        value: 12h
+      # Autorise uniquement l interface a appeler l API.
+      # A renseigner avec l URL exacte du service epsin-web.
+      - key: CORS_ORIGIN
+        sync: false
+      - key: LOGIN_MAX_ECHECS
+        value: "20"
+      - key: LOGIN_WINDOW_MIN
+        value: "15"
+
+  # ---------- Interface ----------
+  - type: web
+    name: epsin-web
+    runtime: static
+    plan: free
+    rootDir: client
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    # L application React gere ses propres routes : toute URL inconnue doit
+    # renvoyer index.html, sinon un rafraichissement sur /eleves donne 404.
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      # URL de l API, injectee au moment du build par Vite.
+      - key: VITE_API_URL
+        sync: false
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: SAMEORIGIN
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
