@@ -16,7 +16,9 @@ services:
     name: epsin-api
     runtime: node
     plan: free
-    region: frankfurt          # le plus proche du Senegal parmi les regions Render
+    # Meme region que la base Neon (us-east-1) : l API et la base sont
+    # cote a cote, sans aller-retour transatlantique a chaque requete.
+    region: virginia
     rootDir: server
     buildCommand: npm ci
     startCommand: npm start
