@@ -47,10 +47,11 @@ services:
         value: "15"
 
   # ---------- Interface ----------
+  # Les sites statiques sont gratuits chez Render et n acceptent pas de
+  # champ `plan` : le declarer fait echouer la validation du blueprint.
   - type: web
     name: epsin-web
     runtime: static
-    plan: free
     rootDir: client
     buildCommand: npm ci && npm run build
     staticPublishPath: dist
