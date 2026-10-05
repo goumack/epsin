@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import { query, transaction } from '../db/pool.js';
 import { authentifier, autoriser, tracer } from '../middleware/auth.js';
-import { verifierEleveTuteur } from '../middleware/portee-tuteur.js';
+import { verifierEleveTuteur, estTuteur, eleveSuivi } from '../middleware/portee-tuteur.js';
+import { prochainNumeroRecu } from '../db/recus.js';
+import { montantEnLettres } from '../metier/montant-lettres.js';
 
 const router = Router();
 router.use(authentifier);
@@ -84,11 +86,8 @@ router.post('/paiements', autoriser(...CAISSE), async (req, res, next) => {
     if (!ar[0]) return res.status(400).json({ erreur: 'Aucune annee scolaire active' });
 
     const paiement = await transaction(async (client) => {
-      // Numero de recu sequentiel, verrouille le temps de la transaction
-      const { rows: nr } = await client.query(
-        `SELECT COUNT(*)::int AS n FROM paiement WHERE annee_id = $1`, [ar[0].id]
-      );
-      const numero = `REC-${new Date().getFullYear()}-${String(nr[0].n + 1).padStart(5, '0')}`;
+      // Numero de recu sequentiel, commun au guichet et au paiement Wave
+      const numero = await prochainNumeroRecu(client);
 
       const { rows } = await client.query(
         `INSERT INTO paiement (eleve_id, frais_id, annee_id, montant, mode, reference,
@@ -142,7 +141,10 @@ router.get('/situation/:eleveId', async (req, res, next) => {
     const { rows: frais } = await query(
       `SELECT f.*,
               COALESCE((SELECT SUM(p.montant) FROM paiement p
-                        WHERE p.eleve_id = $1 AND p.frais_id = f.id AND NOT p.annule), 0) AS paye
+                        -- Seuls les versements de CETTE annee : un paiement
+                        -- d une annee passee ne regle pas la scolarite en cours
+                        WHERE p.eleve_id = $1 AND p.frais_id = f.id
+                          AND p.annee_id = f.annee_id AND NOT p.annule), 0) AS paye
        FROM frais f
        WHERE f.annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)
          AND (f.niveau_id IS NULL OR f.niveau_id = $2)
@@ -225,6 +227,7 @@ router.get('/impayes', autoriser(...CAISSE, 'censeur'), async (req, res, next) =
          AND i.annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)
        LEFT JOIN classe c ON c.id = i.classe_id
        LEFT JOIN paiement p ON p.eleve_id = e.id
+         AND p.annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)
        GROUP BY e.id, e.matricule, e.prenom, e.nom, c.libelle, d.total_du
        HAVING d.total_du - COALESCE(SUM(p.montant) FILTER (WHERE NOT p.annule), 0) > 0
        ORDER BY reste DESC`,
@@ -291,6 +294,130 @@ router.get('/synthese', autoriser(...CAISSE), async (req, res, next) => {
       solde: Number(totaux[0].recettes) - Number(totaux[0].depenses),
       par_mois: parMois,
       par_mode: parMode,
+    });
+  } catch (err) { next(err); }
+});
+
+// ---------- Recus de paiement ----------
+/**
+ * Un recu par paiement : une ecriture du guichet, ou toutes les ecritures
+ * nees d un meme paiement Wave (une par mois couvert). Les ecritures Wave
+ * n existent qu apres la confirmation de la caisse : un paiement declare
+ * mais pas encore verifie n a donc pas de recu.
+ *
+ * Acces : la caisse pour tous, le tuteur pour son seul enfant.
+ */
+function accesRecu(req, eleveId) {
+  if (CAISSE.includes(req.user.role)) return true;
+  return estTuteur(req.user) && Number(eleveSuivi(req.user)) === Number(eleveId);
+}
+
+/** Liste des recus d un eleve, les ecritures Wave regroupees par paiement. */
+router.get('/recus', async (req, res, next) => {
+  try {
+    const eleveId = estTuteur(req.user) ? eleveSuivi(req.user) : Number(req.query.eleve_id);
+    if (!eleveId || !accesRecu(req, eleveId)) {
+      return res.status(403).json({ erreur: 'Acces refuse' });
+    }
+    const { rows } = await query(
+      `SELECT MIN(p.id) AS id, MIN(p.numero_recu) AS numero_recu, COUNT(*)::int AS lignes,
+              SUM(p.montant)::numeric AS montant, MIN(p.date_paiement) AS date_paiement,
+              p.mode, f.libelle AS frais, bool_or(p.annule) AS annule,
+              string_agg(p.mois_couvert, ',' ORDER BY p.id) AS mois
+       FROM paiement p
+       LEFT JOIN frais f ON f.id = p.frais_id
+       WHERE p.eleve_id = $1 AND ($2::boolean OR NOT p.annule)
+       GROUP BY COALESCE(p.paiement_en_ligne_id, -p.id), p.mode, f.libelle
+       ORDER BY MIN(p.date_paiement) DESC, MIN(p.id) DESC`,
+      // Le tuteur ne voit pas les ecritures annulees : elles ne valent rien
+      [eleveId, !estTuteur(req.user)]
+    );
+    res.json(rows);
+  } catch (err) { next(err); }
+});
+
+/** Recu complet, pret a imprimer. `:id` est l id d une ecriture du recu. */
+router.get('/recus/:id', async (req, res, next) => {
+  try {
+    const { rows: base } = await query(
+      `SELECT id, eleve_id, paiement_en_ligne_id FROM paiement WHERE id = $1`,
+      [Number(req.params.id)]
+    );
+    // 404 aussi quand l acces est refuse : ne pas reveler qu un recu existe
+    if (!base[0] || !accesRecu(req, base[0].eleve_id)) {
+      return res.status(404).json({ erreur: 'Recu introuvable' });
+    }
+
+    const { rows: lignes } = await query(
+      `SELECT p.id, p.numero_recu, p.montant, p.mode, p.reference, p.mois_couvert,
+              p.date_paiement, p.annule, p.cree_le, p.annee_id,
+              f.libelle AS frais,
+              u.prenom AS caissier_prenom, u.nom AS caissier_nom
+       FROM paiement p
+       LEFT JOIN frais f ON f.id = p.frais_id
+       LEFT JOIN utilisateur u ON u.id = p.encaisse_par
+       WHERE ${base[0].paiement_en_ligne_id ? 'p.paiement_en_ligne_id = $1' : 'p.id = $1'}
+       ORDER BY p.id`,
+      [base[0].paiement_en_ligne_id || base[0].id]
+    );
+    const premiere = lignes[0];
+
+    const { rows: eleve } = await query(
+      `SELECT e.id, e.matricule, e.prenom, e.nom, c.libelle AS classe, a.libelle AS annee,
+              (SELECT t.prenom || ' ' || t.nom FROM tuteur t
+               JOIN eleve_tuteur et ON et.tuteur_id = t.id
+               WHERE et.eleve_id = e.id ORDER BY et.principal DESC LIMIT 1) AS tuteur
+       FROM eleve e
+       LEFT JOIN inscription i ON i.eleve_id = e.id AND i.annee_id = $2
+       LEFT JOIN classe c ON c.id = i.classe_id
+       LEFT JOIN annee_scolaire a ON a.id = $2
+       WHERE e.id = $1`,
+      [base[0].eleve_id, premiere.annee_id]
+    );
+
+    let wave = null;
+    if (base[0].paiement_en_ligne_id) {
+      const { rows } = await query(
+        `SELECT pel.transaction_id, pel.telephone_payeur, pel.confirme_le,
+                pel.declare_le, pel.mode,
+                v.prenom AS verificateur_prenom, v.nom AS verificateur_nom,
+                ini.prenom || ' ' || ini.nom AS payeur
+         FROM paiement_en_ligne pel
+         LEFT JOIN utilisateur v ON v.id = pel.verifie_par
+         LEFT JOIN utilisateur ini ON ini.id = pel.initie_par
+         WHERE pel.id = $1`,
+        [base[0].paiement_en_ligne_id]
+      );
+      wave = rows[0] || null;
+    }
+
+    const { rows: etab } = await query(
+      `SELECT nom, sigle, adresse, telephone, email FROM etablissement ORDER BY id LIMIT 1`
+    );
+
+    const valides = lignes.filter((l) => !l.annule);
+    const total = valides.reduce((s, l) => s + Number(l.montant), 0);
+    res.json({
+      etablissement: etab[0] || null,
+      eleve: eleve[0],
+      numeros: lignes.map((l) => l.numero_recu),
+      date_paiement: premiere.date_paiement,
+      mode: premiere.mode,
+      reference: wave?.transaction_id || premiere.reference || null,
+      annule: valides.length === 0,
+      lignes: lignes.map((l) => ({
+        numero_recu: l.numero_recu, frais: l.frais, mois: l.mois_couvert,
+        montant: Number(l.montant), annule: l.annule,
+      })),
+      total,
+      total_lettres: montantEnLettres(total),
+      // Qui a encaisse au guichet, ou qui a confirme le paiement Wave
+      valide_par: premiere.caissier_prenom
+        ? `${premiere.caissier_prenom} ${premiere.caissier_nom}`
+        : wave?.verificateur_prenom ? `${wave.verificateur_prenom} ${wave.verificateur_nom}` : null,
+      valide_le: wave?.confirme_le || premiere.cree_le,
+      payeur: wave?.payeur || eleve[0]?.tuteur || null,
+      wave,
     });
   } catch (err) { next(err); }
 });

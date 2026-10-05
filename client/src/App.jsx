@@ -12,6 +12,7 @@ import MonEnfant from './pages/MonEnfant';
 import EmploiDuTemps from './pages/EmploiDuTemps';
 import Finances from './pages/Finances';
 import Communication from './pages/Communication';
+import RecuPaiement from './pages/RecuPaiement';
 import { Bibliotheque, Transport, Utilisateurs, Parametres } from './pages/Administration';
 import { Chargement } from './components/ui';
 
@@ -60,6 +61,9 @@ export default function App() {
       <AuthProvider>
         <Routes>
           <Route path="/connexion" element={<Publique><Connexion /></Publique>} />
+
+          {/* Recu imprimable : hors de la mise en page, seul le recu s imprime */}
+          <Route path="/recu/:id" element={<Protegee roles={['admin', 'comptable', 'parent']}><RecuPaiement /></Protegee>} />
 
           <Route path="/" element={<Protegee><Layout /></Protegee>}>
             <Route index element={<Accueil />} />

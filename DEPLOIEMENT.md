@@ -120,6 +120,28 @@ créé à l'étape 2. Puis, dans cet ordre :
 
 ---
 
+## 6. Paiement des mensualités par Wave
+
+Le blueprint renseigne déjà `WAVE_LIEN_PAIEMENT` avec le lien marchand de
+l'établissement : les tuteurs peuvent payer dès le déploiement. Chaque
+paiement déclaré apparaît dans **Finances → Wave à vérifier**. Le comptable
+le confronte à son historique **Wave Business** avant de valider.
+
+Pour une **confirmation automatique** (sans vérification manuelle), demandez
+à Wave l'accès à l'**API Checkout**, puis :
+
+1. dans Wave Business, créez une clé API et un **webhook** pointant vers
+   `https://epsin-api.onrender.com/api/paiements-en-ligne/wave/webhook`
+   (événements `checkout.session.completed` et
+   `checkout.session.payment_failed`) ;
+2. sur Render, renseignez `WAVE_API_KEY`, `WAVE_WEBHOOK_SECRET` et
+   `APP_URL` (l'URL de `epsin-web`).
+
+La clé API devient alors prioritaire sur le lien. Si le webhook tarde (service
+gratuit en veille), l'application interroge Wave elle-même au retour du parent.
+
+---
+
 ## Bon à savoir
 
 **L'offre gratuite de Render met le service en veille** après 15 minutes

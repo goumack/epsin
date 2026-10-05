@@ -16,6 +16,7 @@ import tableauBordRoutes from './routes/tableau-bord.js';
 import personnelRoutes from './routes/personnel.js';
 import parcoursRoutes from './routes/parcours.js';
 import modulesRoutes from './routes/modules.js';
+import paiementsEnLigneRoutes, { webhookWave } from './routes/paiements-en-ligne.js';
 
 dotenv.config();
 
@@ -24,6 +25,11 @@ const PORT = process.env.PORT || 4000;
 
 app.use(helmet());
 app.use(cors({ origin: process.env.CORS_ORIGIN?.split(',') || '*' }));
+// Webhook Wave : la signature porte sur le corps BRUT, il doit donc etre
+// recu avant que express.json() ne le transforme.
+app.post('/api/paiements-en-ligne/wave/webhook',
+  express.raw({ type: '*/*', limit: '100kb' }), webhookWave);
+
 app.use(express.json({ limit: '2mb' }));
 // Les logs HTTP noieraient la sortie des tests
 if (process.env.NODE_ENV !== 'test') app.use(morgan('dev'));
@@ -64,6 +70,7 @@ app.use('/api/communication', communicationRoutes);
 app.use('/api/tableau-bord', tableauBordRoutes);
 app.use('/api/personnel', personnelRoutes);
 app.use('/api/parcours', parcoursRoutes);
+app.use('/api/paiements-en-ligne', paiementsEnLigneRoutes);
 app.use('/api', modulesRoutes);
 
 app.use((req, res) => res.status(404).json({ erreur: 'Route introuvable' }));

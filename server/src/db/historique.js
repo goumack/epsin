@@ -161,6 +161,9 @@ async function generer() {
 
         // Paiements de l annee : la scolarite a bien ete reglee a l epoque,
         // sinon la colonne « Regle cette annee » afficherait 0 partout.
+        // Le bareme n existe que pour l annee en cours : on s en sert pour
+        // les montants, mais le paiement n est PAS rattache a ce frais —
+        // il solderait sinon la scolarite de l annee en cours.
         const { rows: fraisAnnee } = await client.query(
           `SELECT id, montant, recurrent FROM frais
            WHERE annee_id IS NOT NULL AND niveau_id IS NULL LIMIT 4`
@@ -174,8 +177,8 @@ async function generer() {
             await client.query(
               `INSERT INTO paiement (eleve_id, frais_id, annee_id, montant, mode,
                                      numero_recu, date_paiement)
-               VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-              [el.id, fr.id, annee.id, fr.montant,
+               VALUES ($1,NULL,$2,$3,$4,$5,$6)`,
+              [el.id, annee.id, fr.montant,
                ['especes', 'wave', 'om'][entier(0, 2)],
                `H-${annee.id}-${el.id}-${fr.id}-${m}`,
                d.toISOString().slice(0, 10)]

@@ -48,6 +48,12 @@
     @apply bouton border border-slate-300 dark:border-slate-700
            bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800;
   }
+  /* Paiement mobile Wave : bleu ciel, reconnaissable par les parents */
+  .bouton-wave {
+    @apply bouton bg-sky-500 text-white hover:bg-sky-600
+           focus:outline-none focus:ring-2 focus:ring-sky-400 focus:ring-offset-2
+           dark:focus:ring-offset-slate-950;
+  }
   .bouton-danger {
     @apply bouton bg-red-600 text-white hover:bg-red-700;
   }

@@ -8,6 +8,8 @@ import {
   Chargement, Vide, Modale, Puce, Onglets, useToast,
 } from '../components/ui';
 import BulletinOfficiel from '../components/BulletinOfficiel';
+import { MensualitesWave, SuiviPaiement, ListeRecus } from '../components/PaiementWave';
+import { useSearchParams } from 'react-router-dom';
 
 /**
  * Portail du tuteur : le suivi de son enfant.
@@ -17,7 +19,11 @@ import BulletinOfficiel from '../components/BulletinOfficiel';
  */
 export default function MonEnfant() {
   const { utilisateur } = useAuth();
-  const [onglet, setOnglet] = useState('scolarite');
+  // Au retour de Wave, l URL porte ?paiement=<id> : on ouvre les finances
+  // pour suivre la confirmation.
+  const [params, setParams] = useSearchParams();
+  const paiementRetour = params.get('paiement');
+  const [onglet, setOnglet] = useState(paiementRetour ? 'finances' : 'scolarite');
   const [eleve, setEleve] = useState(null);
   const [periodes, setPeriodes] = useState([]);
   const [periodeId, setPeriodeId] = useState('');
@@ -78,7 +84,13 @@ export default function MonEnfant() {
       )}
       {onglet === 'evolution' && <Evolution eleveId={eleveId} periodes={periodes} />}
       {onglet === 'assiduite' && <Assiduite eleveId={eleveId} />}
-      {onglet === 'finances' && <Finances eleveId={eleveId} />}
+      {onglet === 'finances' && (
+        <Finances
+          eleveId={eleveId}
+          paiementRetour={paiementRetour}
+          fermerRetour={() => setParams({}, { replace: true })}
+        />
+      )}
     </div>
   );
 }
@@ -408,20 +420,42 @@ function FormulaireAbsence({ ouvert, onFermer, onSignale, onErreur }) {
   );
 }
 
-/** Situation financiere de l enfant. */
-function Finances({ eleveId }) {
+/** Situation financiere de l enfant, et paiement des mensualites par Wave. */
+function Finances({ eleveId, paiementRetour, fermerRetour }) {
   const [situation, setSituation] = useState(null);
+  // Change a chaque paiement confirme pour recharger les mensualites
+  const [version, setVersion] = useState(0);
+  const { Toast, succes, erreur } = useToast();
 
-  useEffect(() => {
+  const chargerSituation = useCallback(() => {
     get(`/finances/situation/${eleveId}`)
       .then(setSituation)
       .catch(() => setSituation(null));
   }, [eleveId]);
 
+  useEffect(() => { chargerSituation(); }, [chargerSituation]);
+
   if (!situation) return <Chargement />;
 
   return (
     <div className="space-y-3">
+      <Toast />
+      {paiementRetour && (
+        <SuiviPaiement
+          id={paiementRetour}
+          onTermine={(p) => {
+            if (p.statut === 'reussi') { chargerSituation(); setVersion((v) => v + 1); }
+          }}
+          onFermer={fermerRetour}
+        />
+      )}
+
+      <MensualitesWave
+        key={version}
+        onPaye={() => { chargerSituation(); succes('Paiement transmis'); }}
+        onErreur={erreur}
+      />
+      <ListeRecus key={`recus-${version}`} />
       <div className="grid gap-3 sm:grid-cols-3">
         {[
           ['Total dû', situation.total_du],

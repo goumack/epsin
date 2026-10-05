@@ -21,7 +21,10 @@ services:
     region: virginia
     rootDir: server
     buildCommand: npm ci
-    startCommand: npm start
+    # Les migrations passent a chaque demarrage : deja appliquees, elles sont
+    # ignorees ; une nouvelle (ex. 009, paiement Wave) est creee avant que
+    # l API n accepte la moindre requete. Un echec bloque le demarrage.
+    startCommand: npm run migrate && npm start
     healthCheckPath: /api/sante
     envVars:
       - key: NODE_ENV
@@ -45,6 +48,19 @@ services:
         value: "20"
       - key: LOGIN_WINDOW_MIN
         value: "15"
+      # Paiement des mensualites par Wave : lien marchand de l etablissement.
+      # Le parent paie sur ce lien et declare sa transaction ; le comptable
+      # verifie dans Wave Business puis valide.
+      - key: WAVE_LIEN_PAIEMENT
+        value: https://pay.wave.com/m/M_sn_wF5yaWQxUVkW/c/sn/
+      # Optionnel : API Checkout Wave (confirmation automatique, prioritaire
+      # sur le lien). A renseigner seulement une fois la cle obtenue.
+      - key: WAVE_API_KEY
+        sync: false
+      - key: WAVE_WEBHOOK_SECRET
+        sync: false
+      - key: APP_URL
+        sync: false
 
   # ---------- Interface ----------
   # Les sites statiques sont gratuits chez Render et n acceptent pas de

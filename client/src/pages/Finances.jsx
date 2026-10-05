@@ -2,11 +2,14 @@ import { useEffect, useState, useCallback } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
-import { Plus, TrendingUp, TrendingDown, Wallet, AlertTriangle, Ban } from 'lucide-react';
+import {
+  Plus, TrendingUp, TrendingDown, Wallet, AlertTriangle, Ban, Printer, CheckCircle2,
+} from 'lucide-react';
 import { get, post, patch, fcfa, dateFr } from '../lib/api';
 import {
   Chargement, Erreur, Vide, Modale, Puce, Onglets, Statistique, Recherche, useToast,
 } from '../components/ui';
+import { STATUTS_PAIEMENT } from '../components/PaiementWave';
 
 const MODES = {
   especes: 'Espèces', wave: 'Wave', om: 'Orange Money',
@@ -22,6 +25,7 @@ export default function Finances() {
         onglets={[
           { cle: 'synthese', libelle: 'Synthèse' },
           { cle: 'paiements', libelle: 'Paiements' },
+          { cle: 'wave', libelle: 'Wave à vérifier' },
           { cle: 'impayes', libelle: 'Impayés' },
           { cle: 'depenses', libelle: 'Dépenses' },
           { cle: 'frais', libelle: 'Barème des frais' },
@@ -31,10 +35,43 @@ export default function Finances() {
       />
       {onglet === 'synthese' && <Synthese />}
       {onglet === 'paiements' && <Paiements />}
+      {onglet === 'wave' && <VerificationWave />}
       {onglet === 'impayes' && <Impayes />}
       {onglet === 'depenses' && <Depenses />}
       {onglet === 'frais' && <Frais />}
     </div>
+  );
+}
+
+/**
+ * Bandeau affiche juste apres un encaissement ou une confirmation Wave :
+ * le recu s ouvre dans un nouvel onglet, pret a imprimer.
+ */
+function BandeauRecu({ recu, onFermer }) {
+  if (!recu?.id) return null;
+  return (
+    <div className="animer flex flex-wrap items-center gap-3 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 p-3 text-sm text-emerald-800 dark:text-emerald-200" role="status">
+      <CheckCircle2 className="h-5 w-5 shrink-0" />
+      <p className="min-w-0 flex-1">
+        {recu.texte} — reçu <span className="font-mono">{recu.numero}</span>
+      </p>
+      <a href={`/recu/${recu.id}`} target="_blank" rel="noopener noreferrer" className="bouton-primaire px-3 py-1.5">
+        <Printer className="h-4 w-4" /> Imprimer le reçu
+      </a>
+      <button type="button" onClick={onFermer} className="text-xs underline">Fermer</button>
+    </div>
+  );
+}
+
+/** Lien discret vers le recu d une ecriture, dans les listes. */
+function LienRecu({ id }) {
+  if (!id) return null;
+  return (
+    <a href={`/recu/${id}`} target="_blank" rel="noopener noreferrer"
+       className="inline-flex rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800"
+       aria-label="Imprimer le reçu" title="Imprimer le reçu">
+      <Printer className="h-4 w-4" />
+    </a>
   );
 }
 
@@ -113,6 +150,7 @@ function Paiements() {
   const { Toast, succes, erreur: toastErreur } = useToast();
   const [liste, setListe] = useState(null);
   const [formOuvert, setFormOuvert] = useState(false);
+  const [dernierRecu, setDernierRecu] = useState(null);
 
   const charger = useCallback(async () => {
     try { setListe(await get('/finances/paiements?taille=50')); } catch { setListe({ donnees: [] }); }
@@ -140,6 +178,8 @@ function Paiements() {
           <Plus className="h-4 w-4" /> Encaisser
         </button>
       </div>
+
+      <BandeauRecu recu={dernierRecu} onFermer={() => setDernierRecu(null)} />
 
       <div className="carte overflow-hidden">
         {!liste ? <Chargement /> : liste.donnees.length === 0 ? (
@@ -170,7 +210,8 @@ function Paiements() {
                     <td className="text-right font-semibold tabular-nums">{fcfa(p.montant)}</td>
                     <td className="hidden sm:table-cell"><Puce>{MODES[p.mode] || p.mode}</Puce></td>
                     <td className="hidden lg:table-cell text-slate-500">{dateFr(p.date_paiement)}</td>
-                    <td className="text-right">
+                    <td className="text-right whitespace-nowrap">
+                      <LienRecu id={p.id} />
                       <button
                         onClick={() => annuler(p.id)}
                         className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/50"
@@ -190,7 +231,12 @@ function Paiements() {
       <FormulairePaiement
         ouvert={formOuvert}
         onFermer={() => setFormOuvert(false)}
-        onCree={() => { setFormOuvert(false); succes('Paiement enregistré'); charger(); }}
+        onCree={(p) => {
+          setFormOuvert(false);
+          succes('Paiement enregistré');
+          setDernierRecu({ id: p.id, numero: p.numero_recu, texte: `${fcfa(p.montant)} encaissés` });
+          charger();
+        }}
         onErreur={toastErreur}
       />
     </div>
@@ -234,7 +280,7 @@ function FormulairePaiement({ ouvert, onFermer, onCree, onErreur }) {
     if (!eleve) return onErreur('Sélectionnez un élève');
     setEnvoi(true);
     try {
-      await post('/finances/paiements', {
+      const cree = await post('/finances/paiements', {
         eleve_id: eleve.id,
         frais_id: f.frais_id ? Number(f.frais_id) : null,
         montant: Number(f.montant),
@@ -242,7 +288,7 @@ function FormulairePaiement({ ouvert, onFermer, onCree, onErreur }) {
         reference: f.reference || null,
         mois_couvert: f.mois_couvert || null,
       });
-      onCree();
+      onCree(cree);
     } catch (err) { onErreur(err.message); } finally { setEnvoi(false); }
   };
 
@@ -335,6 +381,267 @@ function FormulairePaiement({ ouvert, onFermer, onCree, onErreur }) {
           </button>
         </div>
       </form>
+    </Modale>
+  );
+}
+
+/**
+ * Paiements Wave declares par les tuteurs via le lien marchand : la caisse
+ * retrouve chaque transaction dans son espace Wave Business, puis valide
+ * (les recus sont alors crees) ou rejette.
+ */
+function VerificationWave() {
+  const [statut, setStatut] = useState('a_verifier');
+  const [liste, setListe] = useState(null);
+  const [aValider, setAValider] = useState(null);
+  const [aRejeter, setARejeter] = useState(null);
+  const { Toast, succes, erreur } = useToast();
+
+  const charger = useCallback(() => {
+    setListe(null);
+    get(`/paiements-en-ligne${statut ? `?statut=${statut}` : ''}`)
+      .then(setListe).catch(() => setListe([]));
+  }, [statut]);
+
+  useEffect(() => { charger(); }, [charger]);
+
+  const total = liste?.reduce((s, p) => s + Number(p.montant), 0) ?? 0;
+
+  // Confirmation en un clic : le montant attendu a bien ete recu sur Wave
+  const [enCours, setEnCours] = useState(null);
+  const [dernierRecu, setDernierRecu] = useState(null);
+  const recuDe = (r) => setDernierRecu({
+    id: r.recus?.[0]?.id,
+    numero: r.recus?.map((x) => x.numero_recu).join(', '),
+    texte: `${r.prenom} ${r.nom} : ${fcfa(r.recus?.reduce((s, x) => s + Number(x.montant), 0))} confirmés`,
+  });
+  const confirmer = async (p) => {
+    setEnCours(p.id);
+    try {
+      recuDe(await post(`/paiements-en-ligne/${p.id}/valider`, {}));
+      charger();
+    } catch (err) {
+      erreur(err.message);
+    } finally {
+      setEnCours(null);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Toast />
+      <BandeauRecu recu={dernierRecu} onFermer={() => setDernierRecu(null)} />
+      <div className="flex flex-wrap items-center gap-3">
+        <select className="champ w-auto" value={statut} onChange={(e) => setStatut(e.target.value)}>
+          <option value="a_verifier">À vérifier</option>
+          <option value="reussi">Validés</option>
+          <option value="rejete">Rejetés</option>
+          <option value="en_attente">Non déclarés</option>
+          <option value="">Tous</option>
+        </select>
+        {liste && liste.length > 0 && (
+          <p className="text-sm text-slate-500">
+            {liste.length} paiement(s) · {fcfa(total)}
+          </p>
+        )}
+      </div>
+
+      {statut === 'a_verifier' && (
+        <p className="text-sm text-slate-500">
+          Vérifiez dans Wave Business que le montant est bien arrivé (même heure, même numéro),
+          puis cliquez sur <strong>Confirmer</strong> : le reçu est créé et le parent prévenu.
+        </p>
+      )}
+
+      <div className="carte overflow-hidden">
+        {!liste ? <Chargement /> : liste.length === 0 ? (
+          <Vide titre="Aucun paiement" texte={statut === 'a_verifier' ? 'Rien à vérifier pour le moment.' : undefined} />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="tableau">
+              <thead>
+                <tr>
+                  <th>Élève</th>
+                  <th className="text-right">Montant</th>
+                  <th>Transaction Wave</th>
+                  <th className="hidden md:table-cell">Déclaré le</th>
+                  <th>Statut</th>
+                  <th className="text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {liste.map((p) => (
+                  <tr key={p.id}>
+                    <td>
+                      <span className="font-medium">{p.prenom} {p.nom}</span>
+                      <span className="block text-xs text-slate-400">
+                        <span className="font-mono">{p.matricule}</span>{p.classe && ` · ${p.classe}`}
+                      </span>
+                    </td>
+                    <td className="text-right tabular-nums">
+                      {fcfa(p.montant)}
+                      <span className="block text-xs text-slate-400">{p.nb_mois} mois</span>
+                    </td>
+                    <td>
+                      <span className="font-mono text-sm">{p.transaction_id || '—'}</span>
+                      {p.telephone_payeur && (
+                        <span className="block text-xs text-slate-400">{p.telephone_payeur}</span>
+                      )}
+                    </td>
+                    {/* L heure aide a retrouver le paiement dans Wave Business */}
+                    <td className="hidden md:table-cell text-slate-500">
+                      {dateFr(p.declare_le || p.cree_le)}
+                      <span className="block text-xs">
+                        {new Date(p.declare_le || p.cree_le).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </td>
+                    <td>
+                      <Puce ton={STATUTS_PAIEMENT[p.statut]?.ton}>{STATUTS_PAIEMENT[p.statut]?.texte}</Puce>
+                      {p.erreur && <span className="block text-xs text-slate-400">{p.erreur}</span>}
+                    </td>
+                    <td className="text-right whitespace-nowrap">
+                      {p.statut === 'reussi' && <LienRecu id={p.paiement_id} />}
+                      {['a_verifier', 'en_attente'].includes(p.statut) && (
+                        <span className="inline-flex flex-col items-end gap-1">
+                          <span className="inline-flex gap-2">
+                            <button type="button" className="bouton-primaire px-3 py-1.5"
+                                    disabled={enCours === p.id} onClick={() => confirmer(p)}>
+                              {enCours === p.id ? '…' : 'Confirmer'}
+                            </button>
+                            <button type="button" className="bouton-secondaire px-3 py-1.5" onClick={() => setARejeter(p)}>
+                              Rejeter
+                            </button>
+                          </span>
+                          <button type="button" className="text-xs text-slate-500 underline" onClick={() => setAValider(p)}>
+                            Montant différent ?
+                          </button>
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <ModaleValidationWave
+        paiement={aValider}
+        onFermer={() => setAValider(null)}
+        onFait={(r) => { setAValider(null); recuDe(r); charger(); }}
+        onErreur={erreur}
+      />
+      <ModaleRejetWave
+        paiement={aRejeter}
+        onFermer={() => setARejeter(null)}
+        onFait={() => { setARejeter(null); succes('Paiement rejeté, le tuteur est prévenu'); charger(); }}
+        onErreur={erreur}
+      />
+    </div>
+  );
+}
+
+function ModaleValidationWave({ paiement, onFermer, onFait, onErreur }) {
+  const [f, setF] = useState({ transaction_id: '', montant_recu: '' });
+  const [envoi, setEnvoi] = useState(false);
+
+  useEffect(() => {
+    if (paiement) {
+      setF({ transaction_id: paiement.transaction_id || '', montant_recu: String(Math.round(paiement.montant)) });
+    }
+  }, [paiement]);
+
+  const valider = async (e) => {
+    e.preventDefault();
+    setEnvoi(true);
+    try {
+      onFait(await post(`/paiements-en-ligne/${paiement.id}/valider`, {
+        transaction_id: f.transaction_id.trim(),
+        montant_recu: Number(f.montant_recu),
+      }));
+    } catch (err) {
+      onErreur(err.message);
+    } finally {
+      setEnvoi(false);
+    }
+  };
+
+  return (
+    <Modale ouverte={Boolean(paiement)} onFermer={onFermer} titre="Valider le paiement Wave" taille="sm">
+      {paiement && (
+        <form onSubmit={valider} className="space-y-3">
+          <p className="rounded-lg bg-slate-50 dark:bg-slate-800/50 p-2.5 text-sm">
+            <strong>{paiement.prenom} {paiement.nom}</strong> — {paiement.frais}, {paiement.nb_mois} mois,
+            {' '}{fcfa(paiement.montant)} attendus.
+          </p>
+          <div>
+            <label className="etiquette" htmlFor="v-transaction">Référence Wave (facultatif)</label>
+            <input id="v-transaction" className="champ font-mono" value={f.transaction_id}
+                   onChange={(e) => setF({ ...f, transaction_id: e.target.value })} />
+          </div>
+          <div>
+            <label className="etiquette" htmlFor="v-montant">Montant reçu sur Wave (FCFA) *</label>
+            <input id="v-montant" className="champ" type="number" min="1" required value={f.montant_recu}
+                   onChange={(e) => setF({ ...f, montant_recu: e.target.value })} />
+            {Number(f.montant_recu) !== Math.round(paiement.montant) && (
+              <p className="mt-1 text-xs text-amber-600">
+                Différent du montant attendu : c'est le montant reçu qui sera imputé, mois par mois.
+              </p>
+            )}
+          </div>
+          <div className="flex justify-end gap-2 border-t border-slate-200 dark:border-slate-800 pt-3">
+            <button type="button" className="bouton-secondaire" onClick={onFermer}>Annuler</button>
+            <button type="submit" className="bouton-primaire" disabled={envoi}>
+              {envoi ? 'Validation…' : 'Valider et créer les reçus'}
+            </button>
+          </div>
+        </form>
+      )}
+    </Modale>
+  );
+}
+
+function ModaleRejetWave({ paiement, onFermer, onFait, onErreur }) {
+  const [motif, setMotif] = useState('');
+  const [envoi, setEnvoi] = useState(false);
+
+  useEffect(() => { if (paiement) setMotif(''); }, [paiement]);
+
+  const rejeter = async (e) => {
+    e.preventDefault();
+    setEnvoi(true);
+    try {
+      await post(`/paiements-en-ligne/${paiement.id}/rejeter`, { motif: motif.trim() });
+      onFait();
+    } catch (err) {
+      onErreur(err.message);
+    } finally {
+      setEnvoi(false);
+    }
+  };
+
+  return (
+    <Modale ouverte={Boolean(paiement)} onFermer={onFermer} titre="Rejeter la déclaration" taille="sm">
+      {paiement && (
+        <form onSubmit={rejeter} className="space-y-3">
+          <p className="text-sm text-slate-500">
+            Le tuteur de <strong>{paiement.prenom} {paiement.nom}</strong> sera prévenu avec ce motif.
+          </p>
+          <div>
+            <label className="etiquette" htmlFor="r-motif">Motif *</label>
+            <input id="r-motif" className="champ" required value={motif}
+                   placeholder="Transaction introuvable dans Wave Business"
+                   onChange={(e) => setMotif(e.target.value)} />
+          </div>
+          <div className="flex justify-end gap-2 border-t border-slate-200 dark:border-slate-800 pt-3">
+            <button type="button" className="bouton-secondaire" onClick={onFermer}>Annuler</button>
+            <button type="submit" className="bouton-danger" disabled={envoi || !motif.trim()}>
+              {envoi ? 'Rejet…' : 'Rejeter'}
+            </button>
+          </div>
+        </form>
+      )}
     </Modale>
   );
 }

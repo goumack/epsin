@@ -308,6 +308,7 @@ titres officiels distincts utilisés au Sénégal.
 - Annulation sans suppression (l'écriture comptable est conservée)
 - Situation par élève : dû / payé / reste
 - **Liste des impayés** avec contact du tuteur
+- **Paiement des mensualités par Wave** depuis le portail du tuteur (voir ci-dessous)
 - Dépenses par catégorie, synthèse recettes/dépenses/solde, graphiques
 
 ### Communication
@@ -476,6 +477,28 @@ comptes de démonstration.
 
 ---
 
+### Paiement des mensualités par Wave
+
+Dans l'onglet **Finances** de son portail, le tuteur voit chaque mois de
+l'année (réglé, à régler, à venir), choisit combien de mois il paie et règle
+avec Wave. Le montant est **calculé par le serveur** : un mois partiellement
+réglé est soldé au prorata, et les versements sont imputés dans l'ordre
+chronologique.
+
+Avec le **lien marchand** de l'établissement (`WAVE_LIEN_PAIEMENT`), Wave ne
+prévient pas l'application. Le parcours est donc :
+
+1. le tuteur paie sur le lien Wave, montant pré-rempli ;
+2. il recopie l'**identifiant de transaction** affiché par Wave ;
+3. le comptable le retrouve dans **Wave Business**, puis, dans
+   *Finances → Wave à vérifier*, **valide** (les reçus sont créés, un par
+   mois) ou **rejette** avec un motif. Le tuteur est notifié dans les deux cas.
+
+Une même transaction ne peut pas solder deux paiements. Avec une clé
+**API Checkout** (`WAVE_API_KEY` + `WAVE_WEBHOOK_SECRET`), la confirmation
+devient automatique, par webhook signé. Sans aucune configuration, hors
+production, le paiement est simulé pour le développement.
+
 ## Variables d'environnement (`server/.env`)
 
 | Variable | Rôle | Exemple |
@@ -486,6 +509,10 @@ comptes de démonstration.
 | `JWT_EXPIRES` | Durée de validité | `12h` |
 | `PORT` | Port de l'API | `4000` |
 | `CORS_ORIGIN` | Origines autorisées | `http://localhost:5173` |
+| `WAVE_LIEN_PAIEMENT` | Lien marchand Wave des mensualités | `https://pay.wave.com/m/…/c/sn/` |
+| `WAVE_API_KEY` | Optionnel : API Checkout (confirmation automatique) | `wave_sn_prod_…` |
+| `WAVE_WEBHOOK_SECRET` | Secret du webhook Wave (avec l'API) | — |
+| `APP_URL` | Adresse de l'interface, retour après paiement (avec l'API) | `https://epsin-web.onrender.com` |
 
 ---
 
