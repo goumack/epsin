@@ -5,6 +5,7 @@ import { authentifier, autoriser, tracer } from '../middleware/auth.js';
 import { entiteDe, accesAutorise, GESTION_SCOLAIRE } from '../middleware/entite.js';
 import { filtreClassesEnseignant, estEnseignant, accesClasse } from '../middleware/portee-enseignant.js';
 import { eleveSuivi, verifierEleveTuteur } from '../middleware/portee-tuteur.js';
+import { attribuerCompteParent } from '../db/comptes-parents.js';
 
 const router = Router();
 router.use(authentifier);
@@ -164,7 +165,18 @@ router.get('/:id', async (req, res, next) => {
        JOIN eleve_tuteur et ON et.tuteur_id = t.id WHERE et.eleve_id = $1`,
       [req.params.id]
     );
-    res.json({ ...rows[0], tuteurs: tuteurs.rows });
+
+    // Etat du compte parent, pour la direction qui remet les fiches d acces
+    let compteParent;
+    if (GESTION.includes(req.user.role)) {
+      const { rows: cp } = await query(
+        `SELECT email AS identifiant, actif, doit_changer_mdp, derniere_connexion
+         FROM utilisateur WHERE eleve_suivi_id = $1 AND role = 'parent' LIMIT 1`,
+        [req.params.id]
+      );
+      compteParent = cp[0] || null;
+    }
+    res.json({ ...rows[0], tuteurs: tuteurs.rows, compte_parent: compteParent });
   } catch (err) { next(err); }
 });
 
@@ -224,11 +236,21 @@ router.post('/', autoriser(...GESTION), async (req, res, next) => {
           [nouvel.id, classe_id, ar[0].id]
         );
       }
-      return nouvel;
+
+      // Compte parent cree dans la meme transaction : un eleve inscrit sans
+      // compte laisserait sa famille sans acces au suivi ni au paiement.
+      const compte = await attribuerCompteParent(client, nouvel.id);
+      return { ...nouvel, compte_parent: compte };
     });
 
-    await tracer(req, 'creation', 'eleve', cree.id, { matricule: cree.matricule });
-    res.status(201).json(cree);
+    const { compte_parent: compte, ...inscrit } = cree;
+    await tracer(req, 'creation', 'eleve', inscrit.id, { matricule: inscrit.matricule });
+    await tracer(req, 'creation_compte_parent', 'utilisateur', compte.utilisateur_id, { eleve_id: inscrit.id });
+    // Le mot de passe temporaire n est renvoye qu ici, pour la fiche d acces
+    res.status(201).json({
+      ...inscrit,
+      compte_parent: { identifiant: compte.identifiant, mot_de_passe: compte.mot_de_passe },
+    });
   } catch (err) { next(err); }
 });
 
@@ -302,6 +324,27 @@ router.patch('/:id/redoublant', autoriser(...GESTION), async (req, res, next) =>
     if (!rows[0]) return res.status(404).json({ erreur: 'Eleve non inscrit cette annee' });
     await tracer(req, 'statut_redoublant', 'eleve', Number(req.params.id), { redoublant });
     res.json(rows[0]);
+  } catch (err) { next(err); }
+});
+
+/**
+ * Fiche d acces parent : cree le compte s il manque (eleve inscrit avant
+ * cette fonction), sinon attribue un nouveau mot de passe temporaire
+ * (fiche perdue, parent bloque). L ancien mot de passe cesse de marcher.
+ */
+router.post('/:id/compte-parent', autoriser(...GESTION), async (req, res, next) => {
+  try {
+    const { rows } = await query(`SELECT id FROM eleve WHERE id = $1`, [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ erreur: 'Eleve introuvable' });
+    if (!accesAutorise(req.user, await entiteEleve(req.params.id))) {
+      return res.status(403).json({ erreur: "Cet élève ne relève pas de votre entité" });
+    }
+    const compte = await transaction((client) => attribuerCompteParent(client, Number(req.params.id)));
+    await tracer(req, compte.cree ? 'creation_compte_parent' : 'reinitialisation_compte_parent',
+      'utilisateur', compte.utilisateur_id, { eleve_id: Number(req.params.id) });
+    res.status(compte.cree ? 201 : 200).json({
+      identifiant: compte.identifiant, mot_de_passe: compte.mot_de_passe, cree: compte.cree,
+    });
   } catch (err) { next(err); }
 });
 

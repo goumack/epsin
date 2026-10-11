@@ -14,6 +14,16 @@ import { pool } from './pool.js';
  * Script idempotent : relancable sans creer de doublon.
  */
 async function creerComptes() {
+  // Tous les comptes recoivent le MEME mot de passe connu : acceptable pour
+  // la demonstration, une faille en production. En production, les comptes
+  // naissent a l inscription, chacun avec son mot de passe temporaire.
+  if (process.env.NODE_ENV === 'production') {
+    console.error(
+      'Refuse en production : ce script donne a tous les parents le mot de passe epsin2026.\n'
+      + 'Les comptes parents sont crees a l inscription de chaque eleve (fiche d acces).'
+    );
+    process.exit(1);
+  }
   const client = await pool.connect();
   try {
     const mdp = await bcrypt.hash('epsin2026', 10);

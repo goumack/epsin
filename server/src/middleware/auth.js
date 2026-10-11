@@ -36,12 +36,21 @@ export async function authentifier(req, res, next) {
     const payload = jwt.verify(token, SECRET);
     const { rows } = await query(
       `SELECT id, email, telephone, role, prenom, nom, photo_url, actif, entite,
-              eleve_suivi_id
+              eleve_suivi_id, doit_changer_mdp
        FROM utilisateur WHERE id = $1`,
       [payload.id]
     );
     if (!rows[0] || !rows[0].actif) {
       return res.status(401).json({ erreur: 'Compte introuvable ou desactive' });
+    }
+    // Mot de passe temporaire (fiche d acces, reinitialisation) : tant qu il
+    // n est pas remplace, le compte ne sert qu a le changer. Applique ici,
+    // cote serveur, pour qu un appel direct a l API soit refuse aussi.
+    if (rows[0].doit_changer_mdp && !req.originalUrl.startsWith('/api/auth/')) {
+      return res.status(403).json({
+        erreur: 'Choisissez d abord votre mot de passe personnel',
+        code: 'MOT_DE_PASSE_A_CHANGER',
+      });
     }
     req.user = rows[0];
     next();

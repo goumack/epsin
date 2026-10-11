@@ -109,14 +109,17 @@ créé à l'étape 2. Puis, dans cet ordre :
 3. **Classes** — créez vos classes
 4. **Utilisateurs** — créez les comptes directeur, proviseur, censeur,
    comptable et enseignants
-5. **Élèves** — inscrivez vos élèves
-6. Générez les comptes tuteurs :
+5. **Élèves** — inscrivez vos élèves. Chaque inscription crée aussitôt le
+   **compte parent** (`matricule@epsin.sn`) et affiche sa **fiche d'accès**
+   à imprimer, avec un mot de passe à usage unique. Remettez-la au parent :
+   à sa première connexion, il choisit son propre mot de passe.
 
-   ```bash
-   DATABASE_URL="…" DATABASE_SSL=true npm run comptes-tuteurs
-   ```
+   Fiche perdue ? Dossier de l'élève → *Compte parent* → **Nouvelle fiche
+   d'accès** (l'ancien mot de passe cesse de fonctionner).
 
-   Chaque élève obtient un compte `matricule@epsin.sn`.
+   > N'utilisez pas `npm run comptes-tuteurs` en production : ce script de
+   > démonstration donne à tous les parents le même mot de passe, et refuse
+   > désormais de s'exécuter avec `NODE_ENV=production`.
 
 ---
 

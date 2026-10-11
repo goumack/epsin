@@ -1,12 +1,13 @@
 import { useEffect, useState, useCallback } from 'react';
 import {
-  User, ClipboardList, CalendarX, Wallet, Printer, ShieldAlert, Clock,
+  User, ClipboardList, CalendarX, Wallet, Printer, ShieldAlert, Clock, KeyRound,
 } from 'lucide-react';
-import { get, fcfa, dateFr, couleurNote } from '../lib/api';
+import { get, post, fcfa, dateFr, couleurNote } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import { Chargement, Erreur, Vide, Modale, Puce, Onglets } from './ui';
 import BulletinOfficiel from './BulletinOfficiel';
 import ParcoursEleve from './ParcoursEleve';
+import FicheAccesParent from './FicheAccesParent';
 
 /**
  * Dossier complet d un eleve : identite, bulletin, detail des notes,
@@ -157,6 +158,68 @@ function Informations({ eleve }) {
           </div>
         )}
       </div>
+
+      {/* Visible de la seule direction : le serveur n envoie pas l info aux autres */}
+      {eleve.compte_parent !== undefined && <CompteParent eleve={eleve} />}
+    </div>
+  );
+}
+
+/**
+ * Compte parent de l eleve : etat, et remise d une fiche d acces. Sert aux
+ * eleves inscrits avant la creation automatique, et aux fiches perdues.
+ */
+function CompteParent({ eleve }) {
+  const [compte, setCompte] = useState(eleve.compte_parent);
+  const [fiche, setFiche] = useState(null);
+  const [envoi, setEnvoi] = useState(false);
+  const [erreur, setErreur] = useState('');
+
+  const genererFiche = async () => {
+    if (compte && !window.confirm(
+      'Générer une nouvelle fiche ? Le mot de passe actuel du parent cessera de fonctionner.'
+    )) return;
+    setEnvoi(true);
+    setErreur('');
+    try {
+      const r = await post(`/eleves/${eleve.id}/compte-parent`, {});
+      setFiche(r);
+      setCompte((c) => ({ ...(c || {}), identifiant: r.identifiant, actif: true, doit_changer_mdp: true }));
+    } catch (e) {
+      setErreur(e.message);
+    } finally {
+      setEnvoi(false);
+    }
+  };
+
+  let etat;
+  if (!compte) etat = <Puce ton="danger">Aucun compte</Puce>;
+  else if (!compte.actif) etat = <Puce ton="danger">Désactivé</Puce>;
+  else if (compte.doit_changer_mdp) etat = <Puce ton="alerte">Fiche remise, pas encore activé</Puce>;
+  else etat = <Puce ton="succes">Actif</Puce>;
+
+  return (
+    <div className="border-t border-slate-200 dark:border-slate-800 pt-4">
+      <h3 className="mb-3 text-sm font-semibold text-slate-500">Compte parent</h3>
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 dark:border-slate-800 p-3">
+        <KeyRound className="h-5 w-5 shrink-0 text-slate-400" />
+        <div className="min-w-0 flex-1 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            {compte && <span className="font-mono">{compte.identifiant}</span>}
+            {etat}
+          </div>
+          {compte?.derniere_connexion && (
+            <p className="text-xs text-slate-500">Dernière connexion : {dateFr(compte.derniere_connexion)}</p>
+          )}
+        </div>
+        <button type="button" className={compte ? 'bouton-secondaire' : 'bouton-primaire'}
+                disabled={envoi} onClick={genererFiche}>
+          <Printer className="h-4 w-4" />
+          {envoi ? 'Génération…' : compte ? "Nouvelle fiche d'accès" : 'Créer le compte parent'}
+        </button>
+      </div>
+      {erreur && <p className="mt-2 text-sm text-red-600">{erreur}</p>}
+      <FicheAccesParent eleve={eleve} compte={fiche} onFermer={() => setFiche(null)} />
     </div>
   );
 }

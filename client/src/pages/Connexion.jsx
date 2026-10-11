@@ -109,6 +109,9 @@ export default function Connexion() {
             </button>
           </form>
 
+          {/* Uniquement en developpement : en production, ces comptes n existent
+              pas et afficher un mot de passe commun inviterait a le tenter */}
+          {import.meta.env.DEV && (
           <div className="mt-6 border-t border-slate-200 dark:border-slate-800 pt-4">
             <p className="mb-2 text-xs font-medium text-slate-500">Comptes de démonstration</p>
             <div className="grid grid-cols-2 gap-1.5">
@@ -133,6 +136,7 @@ export default function Connexion() {
               Mot de passe : epsin2026
             </p>
           </div>
+          )}
         </div>
       </div>
     </div>

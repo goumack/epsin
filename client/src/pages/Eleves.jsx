@@ -3,6 +3,7 @@ import { Plus, ChevronLeft, ChevronRight, Eye } from 'lucide-react';
 import { get, post, dateFr } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import DossierEleve from '../components/DossierEleve';
+import FicheAccesParent from '../components/FicheAccesParent';
 import {
   Chargement, Erreur, Vide, Recherche, Modale, Puce, useToast,
 } from '../components/ui';
@@ -19,6 +20,8 @@ export default function Eleves() {
   const [erreur, setErreur] = useState('');
   const [formOuvert, setFormOuvert] = useState(false);
   const [fiche, setFiche] = useState(null);
+  // Eleve tout juste inscrit : sa fiche d acces parent est a remettre
+  const [nouvelInscrit, setNouvelInscrit] = useState(null);
 
   const TAILLE = 20;
 
@@ -161,11 +164,22 @@ export default function Eleves() {
         ouvert={formOuvert}
         classes={classes}
         onFermer={() => setFormOuvert(false)}
-        onCree={() => { setFormOuvert(false); succes('Élève inscrit avec succès'); charger(); }}
+        onCree={(eleve) => {
+          setFormOuvert(false);
+          succes('Élève inscrit, compte parent créé');
+          setNouvelInscrit(eleve);
+          charger();
+        }}
         onErreur={toastErreur}
       />
 
       <DossierEleve eleveId={fiche} onFermer={() => setFiche(null)} />
+
+      <FicheAccesParent
+        eleve={nouvelInscrit}
+        compte={nouvelInscrit?.compte_parent}
+        onFermer={() => setNouvelInscrit(null)}
+      />
     </div>
   );
 }
@@ -197,7 +211,7 @@ function FormulaireEleve({ ouvert, classes, onFermer, onCree, onErreur }) {
             principal: true,
           }]
         : [];
-      await post('/eleves', {
+      const cree = await post('/eleves', {
         prenom: f.prenom,
         nom: f.nom,
         sexe: f.sexe,
@@ -208,7 +222,7 @@ function FormulaireEleve({ ouvert, classes, onFermer, onCree, onErreur }) {
         classe_id: f.classe_id ? Number(f.classe_id) : null,
         tuteurs,
       });
-      onCree();
+      onCree(cree);
     } catch (err) {
       onErreur(err.message);
     } finally {

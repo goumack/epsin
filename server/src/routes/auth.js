@@ -51,9 +51,16 @@ router.post('/mot-de-passe', authentifier, async (req, res, next) => {
     if (!(await bcrypt.compare(ancien || '', rows[0].mot_de_passe))) {
       return res.status(400).json({ erreur: 'Ancien mot de passe incorrect' });
     }
-    await query(`UPDATE utilisateur SET mot_de_passe = $1 WHERE id = $2`, [
-      await bcrypt.hash(nouveau, 10), req.user.id,
-    ]);
+    // Garder le mot de passe de la fiche reviendrait a le laisser connu de
+    // quiconque a vu la fiche
+    if (nouveau === ancien) {
+      return res.status(400).json({ erreur: 'Le nouveau mot de passe doit etre different de l ancien' });
+    }
+    // Le compte redevient pleinement utilisable
+    await query(
+      `UPDATE utilisateur SET mot_de_passe = $1, doit_changer_mdp = false WHERE id = $2`,
+      [await bcrypt.hash(nouveau, 10), req.user.id]
+    );
     await tracer(req, 'changement_mot_de_passe', 'utilisateur', req.user.id);
     res.json({ message: 'Mot de passe mis a jour' });
   } catch (err) { next(err); }

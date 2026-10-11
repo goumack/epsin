@@ -13,6 +13,7 @@ import EmploiDuTemps from './pages/EmploiDuTemps';
 import Finances from './pages/Finances';
 import Communication from './pages/Communication';
 import RecuPaiement from './pages/RecuPaiement';
+import ChoisirMotDePasse from './pages/ChoisirMotDePasse';
 import { Bibliotheque, Transport, Utilisateurs, Parametres } from './pages/Administration';
 import { Chargement } from './components/ui';
 
@@ -33,6 +34,8 @@ function Protegee({ roles, children }) {
   const { utilisateur, chargement } = useAuth();
   if (chargement) return <div className="flex min-h-screen items-center justify-center"><Chargement /></div>;
   if (!utilisateur) return <Navigate to="/connexion" replace />;
+  // Mot de passe temporaire : rien d autre tant qu il n est pas remplace
+  if (utilisateur.doit_changer_mdp) return <ChoisirMotDePasse />;
   // Renvoyer vers l accueil propre au role evite une boucle de redirection
   // pour un tuteur, qui n a pas acces au tableau de bord de l etablissement.
   if (roles && !roles.includes(utilisateur.role)) {

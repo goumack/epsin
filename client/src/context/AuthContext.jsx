@@ -31,6 +31,13 @@ export function AuthProvider({ children }) {
     return u;
   }, []);
 
+  /** Relit le compte (apres un changement de mot de passe, par exemple). */
+  const rafraichir = useCallback(async () => {
+    const { utilisateur: u } = await get('/auth/moi');
+    setUtilisateur(u);
+    return u;
+  }, []);
+
   const deconnexion = useCallback(() => {
     ecrireJeton(null);
     setUtilisateur(null);
@@ -43,7 +50,7 @@ export function AuthProvider({ children }) {
   );
 
   return (
-    <AuthContext.Provider value={{ utilisateur, chargement, connexion, deconnexion, aRole }}>
+    <AuthContext.Provider value={{ utilisateur, chargement, connexion, deconnexion, rafraichir, aRole }}>
       {children}
     </AuthContext.Provider>
   );

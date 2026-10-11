@@ -203,7 +203,8 @@ router.post('/utilisateurs/:id/reinitialiser', autoriser('admin'), async (req, r
     if (!nouveau || nouveau.length < 8) {
       return res.status(400).json({ erreur: 'Mot de passe : 8 caracteres minimum' });
     }
-    await query(`UPDATE utilisateur SET mot_de_passe = $1 WHERE id = $2`,
+    // Mot de passe connu de l administrateur : a changer a la connexion
+    await query(`UPDATE utilisateur SET mot_de_passe = $1, doit_changer_mdp = true WHERE id = $2`,
       [await bcrypt.hash(nouveau, 10), req.params.id]);
     await tracer(req, 'reinitialisation_mot_de_passe', 'utilisateur', Number(req.params.id));
     res.json({ message: 'Mot de passe reinitialise' });

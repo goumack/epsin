@@ -171,6 +171,13 @@ matricule de l'enfant suivi de `@epsin.sn`** — par exemple
 `ep-2026-0014@epsin.sn`. Un compte par enfant : le tuteur d'une fratrie se
 connecte avec le matricule de l'enfant concerné.
 
+Le compte est **créé à l'inscription de l'élève**, avec un mot de passe à
+usage unique (`K7MP-4QXR`) imprimé sur une **fiche d'accès**. Tant que le
+parent ne l'a pas remplacé par le sien, le serveur refuse toute autre
+requête. Le mot de passe n'est jamais conservé en clair : une fiche perdue
+se remplace depuis le dossier de l'élève (*Compte parent*). La même règle
+s'applique à un mot de passe réinitialisé par l'administrateur.
+
 Le tuteur accède à un espace **« Mon enfant »** à quatre onglets :
 
 | Onglet | Contenu |
