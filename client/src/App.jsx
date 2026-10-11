@@ -13,6 +13,7 @@ import EmploiDuTemps from './pages/EmploiDuTemps';
 import Finances from './pages/Finances';
 import Communication from './pages/Communication';
 import RecuPaiement from './pages/RecuPaiement';
+import FicheInscription from './pages/FicheInscription';
 import ChoisirMotDePasse from './pages/ChoisirMotDePasse';
 import { Bibliotheque, Transport, Utilisateurs, Parametres } from './pages/Administration';
 import { Chargement } from './components/ui';
@@ -66,6 +67,7 @@ export default function App() {
           <Route path="/connexion" element={<Publique><Connexion /></Publique>} />
 
           {/* Recu imprimable : hors de la mise en page, seul le recu s imprime */}
+          <Route path="/fiche-inscription/:id" element={<Protegee roles={[...CHEFS, 'comptable']}><FicheInscription /></Protegee>} />
           <Route path="/recu/:id" element={<Protegee roles={['admin', 'comptable', 'parent']}><RecuPaiement /></Protegee>} />
 
           <Route path="/" element={<Protegee><Layout /></Protegee>}>

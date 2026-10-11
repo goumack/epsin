@@ -185,7 +185,10 @@ function CompteParent({ eleve }) {
     try {
       const r = await post(`/eleves/${eleve.id}/compte-parent`, {});
       setFiche(r);
-      setCompte((c) => ({ ...(c || {}), identifiant: r.identifiant, actif: true, doit_changer_mdp: true }));
+      setCompte((c) => ({
+        ...(c || {}), identifiant: r.identifiant, mot_de_passe: r.mot_de_passe,
+        actif: true, doit_changer_mdp: true,
+      }));
     } catch (e) {
       setErreur(e.message);
     } finally {
@@ -196,28 +199,63 @@ function CompteParent({ eleve }) {
   let etat;
   if (!compte) etat = <Puce ton="danger">Aucun compte</Puce>;
   else if (!compte.actif) etat = <Puce ton="danger">Désactivé</Puce>;
-  else if (compte.doit_changer_mdp) etat = <Puce ton="alerte">Fiche remise, pas encore activé</Puce>;
+  else if (compte.doit_changer_mdp) etat = <Puce ton="alerte">Pas encore activé par le parent</Puce>;
   else etat = <Puce ton="succes">Actif</Puce>;
 
   return (
     <div className="border-t border-slate-200 dark:border-slate-800 pt-4">
-      <h3 className="mb-3 text-sm font-semibold text-slate-500">Compte parent</h3>
-      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 dark:border-slate-800 p-3">
-        <KeyRound className="h-5 w-5 shrink-0 text-slate-400" />
-        <div className="min-w-0 flex-1 text-sm">
-          <div className="flex flex-wrap items-center gap-2">
-            {compte && <span className="font-mono">{compte.identifiant}</span>}
-            {etat}
-          </div>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-slate-500">Accès du parent</h3>
+        <a href={`/fiche-inscription/${eleve.id}`} target="_blank" rel="noopener noreferrer"
+           className="bouton-secondaire px-3 py-1.5">
+          <Printer className="h-4 w-4" /> Fiche d'inscription
+        </a>
+      </div>
+
+      <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-4">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <KeyRound className="h-5 w-5 shrink-0 text-slate-400" />
+          {etat}
           {compte?.derniere_connexion && (
-            <p className="text-xs text-slate-500">Dernière connexion : {dateFr(compte.derniere_connexion)}</p>
+            <span className="text-xs text-slate-500">Dernière connexion : {dateFr(compte.derniere_connexion)}</span>
           )}
         </div>
-        <button type="button" className={compte ? 'bouton-secondaire' : 'bouton-primaire'}
-                disabled={envoi} onClick={genererFiche}>
-          <Printer className="h-4 w-4" />
-          {envoi ? 'Génération…' : compte ? "Nouvelle fiche d'accès" : 'Créer le compte parent'}
-        </button>
+
+        {compte && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <p className="text-xs text-slate-400">Nom d'utilisateur</p>
+              <p className="font-mono text-sm font-semibold break-all">{compte.identifiant}</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-400">Mot de passe</p>
+              {compte.mot_de_passe ? (
+                <p className="font-mono text-lg font-bold tracking-wider">{compte.mot_de_passe}</p>
+              ) : compte.doit_changer_mdp ? (
+                <p className="text-sm text-slate-500">
+                  Non disponible : générez une nouvelle fiche pour en obtenir un.
+                </p>
+              ) : (
+                <p className="text-sm text-slate-500">
+                  Choisi par le parent, confidentiel. En cas d'oubli : nouvelle fiche d'accès.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-slate-100 dark:border-slate-800 pt-3">
+          {compte?.mot_de_passe && (
+            <button type="button" className="bouton-primaire"
+                    onClick={() => setFiche({ identifiant: compte.identifiant, mot_de_passe: compte.mot_de_passe })}>
+              <Printer className="h-4 w-4" /> Imprimer la fiche d'accès
+            </button>
+          )}
+          <button type="button" className={compte ? 'bouton-secondaire' : 'bouton-primaire'}
+                  disabled={envoi} onClick={genererFiche}>
+            {envoi ? 'Génération…' : compte ? "Nouvelle fiche d'accès" : 'Créer le compte parent'}
+          </button>
+        </div>
       </div>
       {erreur && <p className="mt-2 text-sm text-red-600">{erreur}</p>}
       <FicheAcces eleve={eleve} compte={fiche} onFermer={() => setFiche(null)} />

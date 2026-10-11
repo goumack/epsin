@@ -73,6 +73,14 @@ describe('Inscription : le compte parent nait avec l eleve', () => {
   it('la direction voit l etat du compte dans le dossier', async () => {
     const r = await api('GET', `/api/eleves/${eleve.id}`, COMPTES.directeur);
     expect(r.body.compte_parent).toMatchObject({ identifiant: fiche.identifiant, doit_changer_mdp: true });
+    // Tant que le parent ne l a pas remplace, l ecole peut reafficher le mot de passe
+    expect(r.body.compte_parent.mot_de_passe).toBe(fiche.mot_de_passe);
+  });
+
+  it('le mot de passe est conserve chiffre, jamais en clair', async () => {
+    const { rows } = await query(`SELECT mdp_temporaire FROM utilisateur WHERE eleve_suivi_id = $1`, [eleve.id]);
+    expect(rows[0].mdp_temporaire).toBeTruthy();
+    expect(rows[0].mdp_temporaire).not.toContain(fiche.mot_de_passe);
   });
 });
 
@@ -84,6 +92,9 @@ describe('Premiere connexion : changer le mot de passe avant tout', () => {
     const r = await connecter(fiche.identifiant, fiche.mot_de_passe);
     expect(r.status).toBe(200);
     expect(r.body.utilisateur.doit_changer_mdp).toBe(true);
+    // Ni l empreinte ni le mot de passe chiffre ne partent vers le navigateur
+    expect(r.body.utilisateur.mot_de_passe).toBeUndefined();
+    expect(r.body.utilisateur.mdp_temporaire).toBeUndefined();
     jeton = r.body.token;
   });
 
@@ -113,6 +124,11 @@ describe('Premiere connexion : changer le mot de passe avant tout', () => {
     expect(eleves.body.donnees.map((e) => e.id)).toEqual([eleve.id]);
     // L ancien mot de passe de la fiche ne marche plus
     expect((await connecter(fiche.identifiant, fiche.mot_de_passe)).status).toBe(401);
+    // ... et le mot de passe personnel du parent n est consultable par personne
+    const dossier = await api('GET', `/api/eleves/${eleve.id}`, COMPTES.directeur);
+    expect(dossier.body.compte_parent.mot_de_passe).toBeNull();
+    const { rows } = await query(`SELECT mdp_temporaire FROM utilisateur WHERE eleve_suivi_id = $1`, [eleve.id]);
+    expect(rows[0].mdp_temporaire).toBeNull();
   });
 
   it('une nouvelle fiche remplace le mot de passe et impose un nouveau changement', async () => {

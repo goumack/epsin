@@ -6,6 +6,7 @@ import {
   filtreEntite, entiteDe, accesAutorise, GESTION_SCOLAIRE, DIRECTION,
 } from '../middleware/entite.js';
 import { motDePasseTemporaire } from '../db/comptes-parents.js';
+import { chiffrer } from '../securite/chiffrement.js';
 import {
   filtreClassesEnseignant, estEnseignant, accesClasse, enseignantDuCompte,
 } from '../middleware/portee-enseignant.js';
@@ -740,9 +741,9 @@ router.post('/enseignants', autoriser(...DIRECTION), async (req, res, next) => {
     const cree = await transaction(async (client) => {
       const { rows: u } = await client.query(
         `INSERT INTO utilisateur (email, telephone, mot_de_passe, role, prenom, nom,
-                                  entite, doit_changer_mdp)
-         VALUES ($1,$2,$3,'enseignant',$4,$5,$6,true) RETURNING id`,
-        [email, telephone, await bcrypt.hash(motDePasse, 10), prenom, nom, entite]
+                                  entite, doit_changer_mdp, mdp_temporaire)
+         VALUES ($1,$2,$3,'enseignant',$4,$5,$6,true,$7) RETURNING id`,
+        [email, telephone, await bcrypt.hash(motDePasse, 10), prenom, nom, entite, chiffrer(motDePasse)]
       );
       const { rows: en } = await client.query(
         `INSERT INTO enseignant (utilisateur_id, specialite, entite)
@@ -780,8 +781,9 @@ router.post('/enseignants/:id/acces', autoriser(...DIRECTION), async (req, res, 
     }
     const motDePasse = motDePasseTemporaire();
     await query(
-      `UPDATE utilisateur SET mot_de_passe = $2, doit_changer_mdp = true, actif = true WHERE id = $1`,
-      [rows[0].utilisateur_id, await bcrypt.hash(motDePasse, 10)]
+      `UPDATE utilisateur SET mot_de_passe = $2, doit_changer_mdp = true, actif = true,
+                              mdp_temporaire = $3 WHERE id = $1`,
+      [rows[0].utilisateur_id, await bcrypt.hash(motDePasse, 10), chiffrer(motDePasse)]
     );
     await tracer(req, 'reinitialisation_mot_de_passe', 'utilisateur', rows[0].utilisateur_id);
     res.json({ identifiant: rows[0].email || rows[0].telephone, mot_de_passe: motDePasse });

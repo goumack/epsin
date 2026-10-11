@@ -32,7 +32,9 @@ router.post('/connexion', async (req, res, next) => {
 
     await query(`UPDATE utilisateur SET derniere_connexion = now() WHERE id = $1`, [u.id]);
 
+    // Ni l empreinte ni le mot de passe temporaire chiffre ne quittent le serveur
     delete u.mot_de_passe;
+    delete u.mdp_temporaire;
     res.json({ token: signerToken(u), utilisateur: u });
   } catch (err) { next(err); }
 });
@@ -58,7 +60,9 @@ router.post('/mot-de-passe', authentifier, async (req, res, next) => {
     }
     // Le compte redevient pleinement utilisable
     await query(
-      `UPDATE utilisateur SET mot_de_passe = $1, doit_changer_mdp = false WHERE id = $2`,
+      // Le mot de passe temporaire conserve pour la fiche n a plus lieu d etre
+      `UPDATE utilisateur SET mot_de_passe = $1, doit_changer_mdp = false, mdp_temporaire = NULL
+       WHERE id = $2`,
       [await bcrypt.hash(nouveau, 10), req.user.id]
     );
     await tracer(req, 'changement_mot_de_passe', 'utilisateur', req.user.id);

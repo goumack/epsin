@@ -1,13 +1,15 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
+import { chiffrer } from '../securite/chiffrement.js';
 
 /**
  * Comptes parents : un par eleve, cree a l inscription.
  *
  * Identifiant : le matricule de l eleve en minuscules + @epsin.sn
  * (ex. ep-2026-0014@epsin.sn). Mot de passe : tire au hasard, a usage
- * unique — il est remis une seule fois sur la fiche d acces imprimee, n est
- * jamais stocke en clair, et doit etre change a la premiere connexion.
+ * unique, a changer a la premiere connexion. Il est conserve CHIFFRE tant
+ * que le parent ne l a pas remplace, pour que l ecole puisse reimprimer la
+ * fiche ; jamais en clair, et efface des que le parent choisit le sien.
  */
 
 // Sans 0/O, 1/I/L : la fiche est recopiee a la main sur un telephone
@@ -59,9 +61,10 @@ export async function attribuerCompteParent(client, eleveId) {
   );
   if (existant[0]) {
     await client.query(
-      `UPDATE utilisateur SET mot_de_passe = $2, doit_changer_mdp = true, actif = true
+      `UPDATE utilisateur SET mot_de_passe = $2, doit_changer_mdp = true, actif = true,
+                              mdp_temporaire = $3
        WHERE id = $1`,
-      [existant[0].id, empreinte]
+      [existant[0].id, empreinte, chiffrer(motDePasse)]
     );
     return { identifiant, mot_de_passe: motDePasse, cree: false, utilisateur_id: existant[0].id };
   }
@@ -78,10 +81,10 @@ export async function attribuerCompteParent(client, eleveId) {
 
   const { rows } = await client.query(
     `INSERT INTO utilisateur (email, mot_de_passe, role, prenom, nom, telephone,
-                              eleve_suivi_id, doit_changer_mdp)
-     VALUES ($1,$2,'parent',$3,$4,$5,$6,true) RETURNING id`,
+                              eleve_suivi_id, doit_changer_mdp, mdp_temporaire)
+     VALUES ($1,$2,'parent',$3,$4,$5,$6,true,$7) RETURNING id`,
     [identifiant, empreinte, eleve.tuteur_prenom || 'Tuteur',
-     eleve.tuteur_nom || eleve.nom, telephone, eleveId]
+     eleve.tuteur_nom || eleve.nom, telephone, eleveId, chiffrer(motDePasse)]
   );
   return { identifiant, mot_de_passe: motDePasse, cree: true, utilisateur_id: rows[0].id };
 }

@@ -6,6 +6,7 @@ import { entiteDe, accesAutorise, GESTION_SCOLAIRE } from '../middleware/entite.
 import { filtreClassesEnseignant, estEnseignant, accesClasse } from '../middleware/portee-enseignant.js';
 import { eleveSuivi, verifierEleveTuteur } from '../middleware/portee-tuteur.js';
 import { attribuerCompteParent } from '../db/comptes-parents.js';
+import { dechiffrer } from '../securite/chiffrement.js';
 
 const router = Router();
 router.use(authentifier);
@@ -171,11 +172,21 @@ router.get('/:id', async (req, res, next) => {
     let compteParent;
     if ([...GESTION, 'comptable'].includes(req.user.role)) {
       const { rows: cp } = await query(
-        `SELECT email AS identifiant, actif, doit_changer_mdp, derniere_connexion
+        `SELECT email AS identifiant, actif, doit_changer_mdp, derniere_connexion, mdp_temporaire
          FROM utilisateur WHERE eleve_suivi_id = $1 AND role = 'parent' LIMIT 1`,
         [req.params.id]
       );
-      compteParent = cp[0] || null;
+      if (cp[0]) {
+        // Le mot de passe de la fiche n est reaffiche que tant que le parent
+        // ne l a pas remplace ; le sien n est jamais consultable.
+        const { mdp_temporaire: chiffre, ...compte } = cp[0];
+        compteParent = {
+          ...compte,
+          mot_de_passe: compte.doit_changer_mdp ? dechiffrer(chiffre) : null,
+        };
+      } else {
+        compteParent = null;
+      }
     }
     res.json({ ...rows[0], tuteurs: tuteurs.rows, compte_parent: compteParent });
   } catch (err) { next(err); }
