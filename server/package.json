@@ -14,7 +14,8 @@
     "historique": "node src/db/historique.js",
     "comptes-tuteurs": "node src/db/comptes-tuteurs.js",
     "installer": "npm run migrate && npm run seed && npm run historique && npm run comptes-tuteurs",
-    "init-production": "node src/db/init-production.js"
+    "init-production": "node src/db/init-production.js",
+    "reinitialiser-base": "node src/db/reinitialiser-base.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

@@ -145,6 +145,27 @@ gratuit en veille), l'application interroge Wave elle-même au retour du parent.
 
 ---
 
+## Remettre la base à neuf
+
+Pour repartir de zéro (après des essais, avant l'ouverture), dans PowerShell,
+depuis le dossier `server/` :
+
+```powershell
+$env:DATABASE_URL="postgresql://…votre URL Neon…"
+$env:DATABASE_SSL="true"
+$env:ADMIN_EMAIL="votre.email@epsin.sn"
+$env:ADMIN_MOT_DE_PASSE="UnMotDePasseSolide2026"
+npm run reinitialiser-base
+```
+
+La commande affiche la base visée et son contenu, puis demande de taper
+**VIDER**. Elle efface **toutes** les données — élèves, notes, paiements,
+comptes — et reconstruit la structure, l'établissement, l'année en cours,
+les 13 niveaux et le compte administrateur. Irréversible : vérifiez le
+serveur affiché avant de confirmer.
+
+---
+
 ## Bon à savoir
 
 **L'offre gratuite de Render met le service en veille** après 15 minutes
