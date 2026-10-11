@@ -195,7 +195,9 @@ router.get('/classes', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/classes', autoriser(...GESTION), async (req, res, next) => {
+// Le comptable peut ouvrir une classe (pour y inscrire un eleve) ; il ne
+// gere ni l equipe pedagogique ni le professeur principal.
+router.post('/classes', autoriser(...GESTION, 'comptable'), async (req, res, next) => {
   try {
     const { niveau_id, libelle, capacite, salle, prof_principal_id } = req.body;
     if (!niveau_id || !libelle) return res.status(400).json({ erreur: 'Niveau et libelle requis' });

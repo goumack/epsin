@@ -102,7 +102,7 @@ function ListeClasses() {
   return (
     <div className="space-y-4">
       <Toast />
-      {aRole('admin', 'censeur', 'directeur', 'proviseur') && (
+      {aRole('admin', 'censeur', 'directeur', 'proviseur', 'comptable') && (
         <div className="flex justify-end">
           <button onClick={() => setOuvert(true)} className="bouton-primaire">
             <Plus className="h-4 w-4" /> Nouvelle classe

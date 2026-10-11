@@ -71,7 +71,7 @@ export default function App() {
           <Route path="/" element={<Protegee><Layout /></Protegee>}>
             <Route index element={<Accueil />} />
             <Route path="eleves" element={<Protegee roles={[...CHEFS,'comptable','enseignant']}><Eleves /></Protegee>} />
-            <Route path="classes" element={<Protegee roles={[...CHEFS,'enseignant']}><Classes /></Protegee>} />
+            <Route path="classes" element={<Protegee roles={[...CHEFS,'comptable','enseignant']}><Classes /></Protegee>} />
             <Route path="notes" element={<Notes />} />
             <Route path="vie-scolaire" element={<Protegee roles={[...CHEFS,'enseignant']}><VieScolaire /></Protegee>} />
             <Route path="personnel" element={<Protegee roles={[...CHEFS_ETABLISSEMENT,'enseignant']}><Personnel /></Protegee>} />

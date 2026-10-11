@@ -73,7 +73,7 @@ export default function Eleves() {
             <option key={c.id} value={c.id}>{c.libelle}</option>
           ))}
         </select>
-        {aRole('admin', 'censeur', 'directeur', 'proviseur') && (
+        {aRole('admin', 'censeur', 'directeur', 'proviseur', 'comptable') && (
           <button onClick={() => setFormOuvert(true)} className="bouton-primaire sm:ml-auto">
             <Plus className="h-4 w-4" />
             Nouvel élève

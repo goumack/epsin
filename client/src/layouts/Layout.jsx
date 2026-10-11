@@ -21,7 +21,7 @@ const NAVIGATION = [
   // Le tuteur a son propre espace : le suivi de son enfant, rien d autre
   { to: '/mon-enfant', libelle: 'Mon enfant', icone: Users, roles: ['parent'] },
   { to: '/eleves', libelle: 'Élèves', icone: Users, roles: [...CHEFS,'comptable','enseignant'] },
-  { to: '/classes', libelle: 'Classes', icone: School, roles: [...CHEFS,'enseignant'] },
+  { to: '/classes', libelle: 'Classes', icone: School, roles: [...CHEFS,'comptable','enseignant'] },
   { to: '/notes', libelle: 'Notes et bulletins', icone: ClipboardList, roles: [...CHEFS,'enseignant','eleve'] },
   { to: '/vie-scolaire', libelle: 'Vie scolaire', icone: ShieldAlert, roles: [...CHEFS,'enseignant'] },
   { to: '/personnel', libelle: 'Personnel', icone: UserCheck, roles: [...CHEFS_ETABLISSEMENT,'enseignant'] },

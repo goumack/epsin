@@ -181,7 +181,9 @@ router.get('/:id', async (req, res, next) => {
 });
 
 // Creation : eleve + tuteurs + inscription, le tout dans une transaction
-router.post('/', autoriser(...GESTION), async (req, res, next) => {
+// Le comptable inscrit aussi : c est souvent a la caisse, au paiement des
+// frais d inscription, que l eleve arrive dans l etablissement.
+router.post('/', autoriser(...GESTION, 'comptable'), async (req, res, next) => {
   try {
     const parsed = schemaEleve.safeParse(req.body);
     if (!parsed.success) {
