@@ -8,6 +8,7 @@ import { Chargement, Erreur, Vide, Modale, Puce, Onglets } from './ui';
 import BulletinOfficiel from './BulletinOfficiel';
 import ParcoursEleve from './ParcoursEleve';
 import FicheAcces from './FicheAcces';
+import { FormulairePaiement, BandeauRecu } from '../pages/Finances';
 
 /**
  * Dossier complet d un eleve : identite, bulletin, detail des notes,
@@ -418,21 +419,47 @@ function Assiduite({ eleveId }) {
 }
 
 function Finances({ eleveId }) {
+  const { aRole } = useAuth();
+  const caisse = aRole('admin', 'comptable');
   const [situation, setSituation] = useState(null);
   const [erreur, setErreur] = useState('');
+  const [encaisser, setEncaisser] = useState(false);
+  const [recu, setRecu] = useState(null);
+  const [messageCaisse, setMessageCaisse] = useState('');
 
-  useEffect(() => {
-    setSituation(null);
+  const charger = useCallback(() => {
     get(`/finances/situation/${eleveId}`)
       .then(setSituation)
       .catch((e) => setErreur(e.message));
   }, [eleveId]);
 
+  useEffect(() => { setSituation(null); charger(); }, [charger]);
+
   if (erreur) return <Vide titre="Situation indisponible" texte={erreur} />;
   if (!situation) return <Chargement />;
 
+  // Frais d inscription encore dus : on les propose en premier
+  const inscriptionDue = situation.lignes?.some(
+    (l) => !l.recurrent && /inscri/i.test(l.libelle) && Number(l.reste) > 0
+  );
+
   return (
     <div className="space-y-4">
+      {caisse && (
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {inscriptionDue && (
+            <span className="mr-auto text-sm text-amber-600 dark:text-amber-400">
+              Frais d'inscription non réglés
+            </span>
+          )}
+          <button type="button" className="bouton-primaire" onClick={() => { setMessageCaisse(''); setEncaisser(true); }}>
+            <Wallet className="h-4 w-4" />
+            {inscriptionDue ? "Encaisser les frais d'inscription" : 'Encaisser un paiement'}
+          </button>
+        </div>
+      )}
+      {messageCaisse && <p className="text-sm text-red-600">{messageCaisse}</p>}
+      <BandeauRecu recu={recu} onFermer={() => setRecu(null)} />
       <div className="grid grid-cols-3 gap-3">
         <div className="rounded-lg bg-slate-50 dark:bg-slate-800/50 p-3">
           <p className="text-xs text-slate-400">Total dû</p>
@@ -457,6 +484,19 @@ function Finances({ eleveId }) {
           Cet élève est à jour de ses paiements.
         </div>
       )}
+
+      <FormulairePaiement
+        ouvert={encaisser}
+        eleveInitial={situation.eleve}
+        preselection={inscriptionDue ? 'inscription' : null}
+        onFermer={() => setEncaisser(false)}
+        onCree={(p) => {
+          setEncaisser(false);
+          setRecu({ id: p.id, numero: p.numero_recu, texte: `${fcfa(p.montant)} encaissés` });
+          charger();
+        }}
+        onErreur={setMessageCaisse}
+      />
 
       <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-800">
         <table className="tableau">

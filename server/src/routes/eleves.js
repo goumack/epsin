@@ -166,9 +166,10 @@ router.get('/:id', async (req, res, next) => {
       [req.params.id]
     );
 
-    // Etat du compte parent, pour la direction qui remet les fiches d acces
+    // Etat du compte parent, pour qui remet les fiches d acces : la direction
+    // et le comptable, qui inscrit souvent l eleve a la caisse
     let compteParent;
-    if (GESTION.includes(req.user.role)) {
+    if ([...GESTION, 'comptable'].includes(req.user.role)) {
       const { rows: cp } = await query(
         `SELECT email AS identifiant, actif, doit_changer_mdp, derniere_connexion
          FROM utilisateur WHERE eleve_suivi_id = $1 AND role = 'parent' LIMIT 1`,
@@ -334,7 +335,7 @@ router.patch('/:id/redoublant', autoriser(...GESTION), async (req, res, next) =>
  * cette fonction), sinon attribue un nouveau mot de passe temporaire
  * (fiche perdue, parent bloque). L ancien mot de passe cesse de marcher.
  */
-router.post('/:id/compte-parent', autoriser(...GESTION), async (req, res, next) => {
+router.post('/:id/compte-parent', autoriser(...GESTION, 'comptable'), async (req, res, next) => {
   try {
     const { rows } = await query(`SELECT id FROM eleve WHERE id = $1`, [req.params.id]);
     if (!rows[0]) return res.status(404).json({ erreur: 'Eleve introuvable' });

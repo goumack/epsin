@@ -137,12 +137,19 @@ describe('Fiche d acces : qui peut la generer', () => {
     expect(r.body.identifiant).toBe(fiche.identifiant);
   });
 
-  it('refusee hors de l entite, a un enseignant, a un parent, a la caisse', async () => {
+  it('refusee hors de l entite, a un enseignant, a un parent', async () => {
     const chemin = `/api/eleves/${eleve.id}/compte-parent`;
     expect((await api('POST', chemin, COMPTES.proviseur, {})).status).toBe(403);
     expect((await api('POST', chemin, COMPTES.maitre, {})).status).toBe(403);
-    expect((await api('POST', chemin, COMPTES.comptable, {})).status).toBe(403);
     const parent = `${ctx.eleveCI.matricule.toLowerCase()}@epsin.sn`;
     expect((await api('POST', chemin, parent, {})).status).toBe(403);
+  });
+
+  it('permise au comptable, qui inscrit souvent a la caisse', async () => {
+    const dossier = await api('GET', `/api/eleves/${eleve.id}`, COMPTES.comptable);
+    expect(dossier.body.compte_parent).toMatchObject({ identifiant: fiche.identifiant });
+    const r = await api('POST', `/api/eleves/${eleve.id}/compte-parent`, COMPTES.comptable, {});
+    expect(r.status).toBe(200);
+    expect(r.body.mot_de_passe).toBeTruthy();
   });
 });

@@ -47,7 +47,7 @@ export default function Finances() {
  * Bandeau affiche juste apres un encaissement ou une confirmation Wave :
  * le recu s ouvre dans un nouvel onglet, pret a imprimer.
  */
-function BandeauRecu({ recu, onFermer }) {
+export function BandeauRecu({ recu, onFermer }) {
   if (!recu?.id) return null;
   return (
     <div className="animer flex flex-wrap items-center gap-3 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 p-3 text-sm text-emerald-800 dark:text-emerald-200" role="status">
@@ -243,7 +243,15 @@ function Paiements() {
   );
 }
 
-function FormulairePaiement({ ouvert, onFermer, onCree, onErreur }) {
+/** Frais d inscription : ponctuel, obligatoire, et nomme comme tel. */
+const estInscription = (fr) => !fr.recurrent && /inscri/i.test(fr.libelle);
+
+/**
+ * Encaissement au guichet. `eleveInitial` ouvre le formulaire sur un eleve
+ * deja choisi (depuis son dossier, ou juste apres son inscription) ;
+ * `preselection="inscription"` y place en plus ses frais d inscription.
+ */
+export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveInitial = null, preselection = null }) {
   const [recherche, setRecherche] = useState('');
   const [eleves, setEleves] = useState([]);
   const [eleve, setEleve] = useState(null);
@@ -253,11 +261,25 @@ function FormulairePaiement({ ouvert, onFermer, onCree, onErreur }) {
   const [envoi, setEnvoi] = useState(false);
 
   useEffect(() => {
-    if (ouvert) {
-      setRecherche(''); setEleve(null); setSituation(null);
-      setF({ frais_id: '', montant: '', mode: 'especes', reference: '', mois_couvert: '' });
-      get('/finances/frais').then(setFrais).catch(() => {});
-    }
+    if (!ouvert) return;
+    setRecherche(''); setEleve(eleveInitial); setSituation(null);
+    setF({ frais_id: '', montant: '', mode: 'especes', reference: '', mois_couvert: '' });
+    (async () => {
+      const [bareme, sit] = await Promise.all([
+        get('/finances/frais').catch(() => []),
+        eleveInitial ? get(`/finances/situation/${eleveInitial.id}`).catch(() => null) : null,
+      ]);
+      setFrais(bareme);
+      setSituation(sit);
+      if (preselection === 'inscription') {
+        // Les frais d inscription applicables a l eleve (son niveau ou tous)
+        const ligne = sit?.lignes?.find(estInscription) || bareme.find(estInscription);
+        if (ligne) {
+          setF((v) => ({ ...v, frais_id: String(ligne.id), montant: String(Math.round(ligne.reste ?? ligne.montant)) }));
+        }
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ouvert]);
 
   useEffect(() => {
@@ -293,6 +315,15 @@ function FormulairePaiement({ ouvert, onFermer, onCree, onErreur }) {
   };
 
   const maj = (c) => (e) => setF((v) => ({ ...v, [c]: e.target.value }));
+
+  // Choisir un frais propose ce qui reste a payer dessus (sinon son montant)
+  const choisirFrais = (e) => {
+    const id = e.target.value;
+    const ligne = situation?.lignes?.find((l) => String(l.id) === id);
+    const bareme = frais.find((fr) => String(fr.id) === id);
+    const propose = ligne ? (ligne.recurrent ? ligne.montant : ligne.reste) : bareme?.montant;
+    setF((v) => ({ ...v, frais_id: id, montant: propose ? String(Math.round(propose)) : v.montant }));
+  };
 
   return (
     <Modale ouverte={ouvert} onFermer={onFermer} titre="Encaisser un paiement" taille="sm">
@@ -345,7 +376,7 @@ function FormulairePaiement({ ouvert, onFermer, onCree, onErreur }) {
 
         <div>
           <label className="etiquette">Type de frais</label>
-          <select className="champ" value={f.frais_id} onChange={maj('frais_id')}>
+          <select className="champ" value={f.frais_id} onChange={choisirFrais}>
             <option value="">Non précisé</option>
             {frais.map((fr) => (
               <option key={fr.id} value={fr.id}>{fr.libelle} — {fcfa(fr.montant)}</option>

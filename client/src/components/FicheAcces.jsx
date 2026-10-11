@@ -97,7 +97,7 @@ function imprimerFiche({ etablissement, eleve, compte, destinataire = 'parent' }
  * `eleve` designe la personne concernee : l eleve (fiche parent) ou
  * l enseignant lui-meme.
  */
-export default function FicheAcces({ eleve, compte, onFermer, destinataire = 'parent' }) {
+export default function FicheAcces({ eleve, compte, onFermer, destinataire = 'parent', suite = null }) {
   const [etablissement, setEtablissement] = useState(null);
 
   useEffect(() => {
@@ -129,10 +129,16 @@ export default function FicheAcces({ eleve, compte, onFermer, destinataire = 'pa
           </p>
           <div className="flex justify-end gap-2 border-t border-slate-200 dark:border-slate-800 pt-3">
             <button type="button" className="bouton-secondaire" onClick={onFermer}>Fermer</button>
-            <button type="button" className="bouton-primaire"
+            <button type="button" className={suite ? 'bouton-secondaire' : 'bouton-primaire'}
                     onClick={() => imprimerFiche({ etablissement, eleve, compte, destinataire })}>
               <Printer className="h-4 w-4" /> Imprimer la fiche
             </button>
+            {/* Etape suivante, par exemple encaisser les frais d inscription */}
+            {suite && (
+              <button type="button" className="bouton-primaire" onClick={suite.action}>
+                {suite.libelle}
+              </button>
+            )}
           </div>
         </div>
       )}

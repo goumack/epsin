@@ -1,9 +1,10 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Plus, ChevronLeft, ChevronRight, Eye } from 'lucide-react';
-import { get, post, dateFr } from '../lib/api';
+import { get, post, dateFr, fcfa } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import DossierEleve from '../components/DossierEleve';
 import FicheAcces from '../components/FicheAcces';
+import { FormulairePaiement, BandeauRecu } from './Finances';
 import {
   Chargement, Erreur, Vide, Recherche, Modale, Puce, useToast,
 } from '../components/ui';
@@ -22,6 +23,10 @@ export default function Eleves() {
   const [fiche, setFiche] = useState(null);
   // Eleve tout juste inscrit : sa fiche d acces parent est a remettre
   const [nouvelInscrit, setNouvelInscrit] = useState(null);
+  // Encaissement des frais d inscription, juste apres l inscription
+  const [aEncaisser, setAEncaisser] = useState(null);
+  const [recu, setRecu] = useState(null);
+  const caisse = aRole('admin', 'comptable');
 
   const TAILLE = 20;
 
@@ -54,6 +59,7 @@ export default function Eleves() {
   return (
     <div className="animer space-y-4">
       <Toast />
+      <BandeauRecu recu={recu} onFermer={() => setRecu(null)} />
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <div className="flex-1 sm:max-w-xs">
@@ -179,6 +185,22 @@ export default function Eleves() {
         eleve={nouvelInscrit}
         compte={nouvelInscrit?.compte_parent}
         onFermer={() => setNouvelInscrit(null)}
+        suite={caisse ? {
+          libelle: "Encaisser les frais d'inscription",
+          action: () => { setAEncaisser(nouvelInscrit); setNouvelInscrit(null); },
+        } : null}
+      />
+
+      <FormulairePaiement
+        ouvert={Boolean(aEncaisser)}
+        eleveInitial={aEncaisser}
+        preselection="inscription"
+        onFermer={() => setAEncaisser(null)}
+        onCree={(p) => {
+          setAEncaisser(null);
+          setRecu({ id: p.id, numero: p.numero_recu, texte: `${fcfa(p.montant)} encaissés` });
+        }}
+        onErreur={toastErreur}
       />
     </div>
   );
@@ -200,6 +222,12 @@ function FormulaireEleve({ ouvert, classes, onFermer, onCree, onErreur }) {
 
   const soumettre = async (e) => {
     e.preventDefault();
+    // Un tuteur a moitie rempli etait ignore sans avertissement : on le dit
+    const tuteurEntame = [f.tuteur_prenom, f.tuteur_nom, f.tuteur_telephone].some((v) => v.trim());
+    if (tuteurEntame && (!f.tuteur_nom.trim() || !f.tuteur_telephone.trim())) {
+      onErreur('Tuteur : le nom et le téléphone sont nécessaires (ou laissez les trois champs vides)');
+      return;
+    }
     setEnvoi(true);
     try {
       const tuteurs = f.tuteur_nom && f.tuteur_telephone
