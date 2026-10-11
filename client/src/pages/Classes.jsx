@@ -6,6 +6,7 @@ import {
   Chargement, Vide, Modale, Puce, Onglets, useToast,
 } from '../components/ui';
 import DossierClasse from '../components/DossierClasse';
+import FicheAcces from '../components/FicheAcces';
 import FinAnnee from './FinAnnee';
 
 export default function Classes() {
@@ -428,13 +429,45 @@ function FormulaireMatiere({ matiere, ouvert, niveaux, onFermer, onEnregistre, o
 }
 
 function Enseignants() {
+  const { aRole, utilisateur } = useAuth();
+  const { Toast, succes, erreur } = useToast();
   const [liste, setListe] = useState(null);
-  useEffect(() => { get('/scolarite/enseignants').then(setListe).catch(() => setListe([])); }, []);
+  const [formOuvert, setFormOuvert] = useState(false);
+  // Fiche d acces a remettre : { personne, compte }
+  const [fiche, setFiche] = useState(null);
+  // La direction cree et gere les comptes de ses enseignants
+  const direction = aRole('admin', 'directeur', 'proviseur');
+
+  const charger = useCallback(() => {
+    get('/scolarite/enseignants').then(setListe).catch(() => setListe([]));
+  }, []);
+  useEffect(() => { charger(); }, [charger]);
+
+  const nouvelleFiche = async (e) => {
+    if (!window.confirm(`Générer une nouvelle fiche d'accès pour ${e.prenom} ${e.nom} ? `
+      + 'Son mot de passe actuel cessera de fonctionner.')) return;
+    try {
+      const compte = await post(`/scolarite/enseignants/${e.id}/acces`, {});
+      setFiche({ personne: e, compte });
+    } catch (err) { erreur(err.message); }
+  };
 
   return (
     <div className="space-y-4">
+      <Toast />
+      {direction && (
+        <div className="flex justify-end">
+          <button type="button" className="bouton-primaire" onClick={() => setFormOuvert(true)}>
+            <Plus className="h-4 w-4" /> Ajouter un enseignant
+          </button>
+        </div>
+      )}
+
       {!liste ? <Chargement /> : liste.length === 0 ? (
-        <div className="carte"><Vide titre="Aucun enseignant" /></div>
+        <div className="carte">
+          <Vide titre="Aucun enseignant"
+                texte={direction ? 'Ajoutez vos maîtres et professeurs, puis affectez-les dans le dossier de chaque classe.' : undefined} />
+        </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {liste.map((e) => (
@@ -443,12 +476,13 @@ function Enseignants() {
                 <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-marine-100 dark:bg-marine-900 font-semibold text-marine-700 dark:text-marine-300">
                   {e.prenom?.[0]}{e.nom?.[0]}
                 </div>
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{e.prenom} {e.nom}</p>
                   <p className="truncate text-xs text-slate-500">{e.specialite || 'Non précisé'}</p>
+                  <p className="truncate text-xs text-slate-400">{e.email || e.telephone}</p>
                 </div>
               </div>
-              {e.affectations?.length > 0 && (
+              {e.affectations?.length > 0 ? (
                 <div className="flex flex-wrap gap-1.5">
                   {e.affectations.slice(0, 4).map((a, i) => (
                     <Puce key={i}>{a.classe} · {a.matiere}</Puce>
@@ -457,11 +491,116 @@ function Enseignants() {
                     <Puce ton="info">+{e.affectations.length - 4}</Puce>
                   )}
                 </div>
+              ) : (
+                <p className="text-xs text-slate-400">
+                  Aucune classe : affectez-le depuis le dossier d'une classe (onglet Équipe pédagogique).
+                </p>
+              )}
+              {direction && (
+                <button type="button" onClick={() => nouvelleFiche(e)}
+                        className="mt-3 text-xs text-slate-500 underline">
+                  Nouvelle fiche d'accès
+                </button>
               )}
             </div>
           ))}
         </div>
       )}
+
+      <FormulaireEnseignant
+        ouvert={formOuvert}
+        // Seul l administrateur choisit l entite : les autres creent dans la leur
+        choixEntite={utilisateur?.role === 'admin'}
+        onFermer={() => setFormOuvert(false)}
+        onCree={(e) => {
+          setFormOuvert(false);
+          succes(`${e.prenom} ${e.nom} ajouté`);
+          setFiche({ personne: e, compte: e.compte });
+          charger();
+        }}
+        onErreur={erreur}
+      />
+      <FicheAcces
+        destinataire="enseignant"
+        eleve={fiche?.personne}
+        compte={fiche?.compte}
+        onFermer={() => setFiche(null)}
+      />
     </div>
+  );
+}
+
+function FormulaireEnseignant({ ouvert, choixEntite, onFermer, onCree, onErreur }) {
+  const vide = { prenom: '', nom: '', telephone: '', email: '', specialite: '', entite: 'scolaire' };
+  const [f, setF] = useState(vide);
+  const [envoi, setEnvoi] = useState(false);
+
+  useEffect(() => { if (ouvert) setF(vide); }, [ouvert]);
+  const maj = (champ) => (e) => setF((v) => ({ ...v, [champ]: e.target.value }));
+
+  const soumettre = async (e) => {
+    e.preventDefault();
+    setEnvoi(true);
+    try {
+      onCree(await post('/scolarite/enseignants', {
+        ...f,
+        entite: choixEntite ? f.entite : undefined,
+      }));
+    } catch (err) {
+      onErreur(err.message);
+    } finally {
+      setEnvoi(false);
+    }
+  };
+
+  return (
+    <Modale ouverte={ouvert} onFermer={onFermer} titre="Ajouter un enseignant" taille="sm">
+      <form onSubmit={soumettre} className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="etiquette" htmlFor="ens-prenom">Prénom *</label>
+            <input id="ens-prenom" className="champ" required autoFocus value={f.prenom} onChange={maj('prenom')} />
+          </div>
+          <div>
+            <label className="etiquette" htmlFor="ens-nom">Nom *</label>
+            <input id="ens-nom" className="champ" required value={f.nom} onChange={maj('nom')} />
+          </div>
+        </div>
+        <div>
+          <label className="etiquette" htmlFor="ens-tel">Téléphone</label>
+          <input id="ens-tel" className="champ" inputMode="tel" placeholder="77 123 45 67"
+                 value={f.telephone} onChange={maj('telephone')} />
+        </div>
+        <div>
+          <label className="etiquette" htmlFor="ens-email">Email</label>
+          <input id="ens-email" className="champ" type="email" placeholder="prenom.nom@epsin.sn"
+                 value={f.email} onChange={maj('email')} />
+          <p className="mt-1 text-xs text-slate-500">
+            Téléphone ou email : l'un des deux sert d'identifiant de connexion (l'email s'il est renseigné).
+          </p>
+        </div>
+        <div>
+          <label className="etiquette" htmlFor="ens-specialite">Spécialité</label>
+          <input id="ens-specialite" className="champ" placeholder="Mathématiques, Maître polyvalent…"
+                 value={f.specialite} onChange={maj('specialite')} />
+        </div>
+        {choixEntite && (
+          <div>
+            <label className="etiquette" htmlFor="ens-entite">Entité *</label>
+            <select id="ens-entite" className="champ" value={f.entite} onChange={maj('entite')}>
+              <option value="scolaire">Scolaire (élémentaire) — maître</option>
+              <option value="secondaire">Moyen et secondaire — professeur</option>
+            </select>
+          </div>
+        )}
+        <div className="flex justify-end gap-2 border-t border-slate-200 dark:border-slate-800 pt-3">
+          <button type="button" className="bouton-secondaire" onClick={onFermer}>Annuler</button>
+          <button type="submit" className="bouton-primaire"
+                  disabled={envoi || (!f.telephone.trim() && !f.email.trim())}>
+            {envoi ? 'Création…' : 'Créer le compte'}
+          </button>
+        </div>
+      </form>
+    </Modale>
   );
 }

@@ -3,7 +3,7 @@ import { Plus, ChevronLeft, ChevronRight, Eye } from 'lucide-react';
 import { get, post, dateFr } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import DossierEleve from '../components/DossierEleve';
-import FicheAccesParent from '../components/FicheAccesParent';
+import FicheAcces from '../components/FicheAcces';
 import {
   Chargement, Erreur, Vide, Recherche, Modale, Puce, useToast,
 } from '../components/ui';
@@ -175,7 +175,7 @@ export default function Eleves() {
 
       <DossierEleve eleveId={fiche} onFermer={() => setFiche(null)} />
 
-      <FicheAccesParent
+      <FicheAcces
         eleve={nouvelInscrit}
         compte={nouvelInscrit?.compte_parent}
         onFermer={() => setNouvelInscrit(null)}

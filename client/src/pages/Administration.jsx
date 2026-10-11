@@ -294,7 +294,7 @@ export function Utilisateurs() {
   const { Toast, succes, erreur: toastErreur } = useToast();
   const [liste, setListe] = useState(null);
   const [ouvert, setOuvert] = useState(false);
-  const [f, setF] = useState({ prenom: '', nom: '', email: '', telephone: '', role: 'enseignant', mot_de_passe: '', specialite: '' });
+  const [f, setF] = useState({ prenom: '', nom: '', email: '', telephone: '', role: 'enseignant', mot_de_passe: '', specialite: '', entite: 'scolaire' });
 
   const charger = useCallback(() => {
     get('/utilisateurs').then(setListe).catch(() => setListe([]));
@@ -306,7 +306,7 @@ export function Utilisateurs() {
     try {
       await post('/utilisateurs', f);
       setOuvert(false);
-      setF({ prenom: '', nom: '', email: '', telephone: '', role: 'enseignant', mot_de_passe: '', specialite: '' });
+      setF({ prenom: '', nom: '', email: '', telephone: '', role: 'enseignant', mot_de_passe: '', specialite: '', entite: 'scolaire' });
       succes('Compte créé');
       charger();
     } catch (err) { toastErreur(err.message); }
@@ -414,6 +414,15 @@ export function Utilisateurs() {
             <div>
               <label className="etiquette">Spécialité</label>
               <input className="champ" value={f.specialite} onChange={(e) => setF({ ...f, specialite: e.target.value })} placeholder="Mathématiques" />
+            </div>
+          )}
+          {f.role === 'enseignant' && (
+            <div>
+              <label className="etiquette">Entité</label>
+              <select className="champ" value={f.entite} onChange={(e) => setF({ ...f, entite: e.target.value })}>
+                <option value="scolaire">Scolaire (élémentaire) — maître</option>
+                <option value="secondaire">Moyen et secondaire — professeur</option>
+              </select>
             </div>
           )}
           <div className="grid grid-cols-2 gap-3">

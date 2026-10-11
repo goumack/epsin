@@ -10,19 +10,40 @@ function html(valeur) {
   }[c]));
 }
 
+/** Textes de la fiche selon la personne a qui elle est remise. */
+const PUBLICS = {
+  parent: {
+    titre: 'Accès au portail des parents',
+    sujet: (p) => `Élève : <strong>${html(p.prenom)} ${html(p.nom)}</strong>`
+      + (p.matricule ? ` — matricule ${html(p.matricule)}` : '')
+      + (p.classe ? ` — ${html(p.classe)}` : ''),
+    usage: 'Vous pourrez ensuite suivre les notes, les absences et les paiements de votre enfant, '
+      + 'et régler les mensualités par Wave.',
+    perte: "demandez une nouvelle fiche à l'établissement",
+  },
+  enseignant: {
+    titre: 'Accès à EPSIN — espace enseignant',
+    sujet: (p) => `Enseignant : <strong>${html(p.prenom)} ${html(p.nom)}</strong>`
+      + (p.specialite ? ` — ${html(p.specialite)}` : ''),
+    usage: "Vous pourrez ensuite saisir vos notes, faire l'appel et gérer votre emploi du temps.",
+    perte: 'demandez une nouvelle fiche à la direction',
+  },
+};
+
 /**
- * Fiche d acces remise au parent : identifiant et mot de passe a usage
- * unique. Imprimee dans une fenetre a part, pour que seule la fiche sorte
+ * Fiche d acces remise au parent ou a l enseignant : identifiant et mot de
+ * passe a usage unique. Imprimee dans une fenetre a part, pour que seule la fiche sorte
  * sur le papier. Le mot de passe n est visible qu ici : le serveur ne le
  * conserve pas en clair et ne pourra plus le redonner.
  */
-function imprimerFiche({ etablissement, eleve, compte }) {
+function imprimerFiche({ etablissement, eleve, compte, destinataire = 'parent' }) {
+  const textes = PUBLICS[destinataire];
   const site = window.location.origin;
   const fenetre = window.open('', '_blank');
   if (!fenetre) return false;
   fenetre.document.write(`<!doctype html>
 <html lang="fr"><head><meta charset="utf-8">
-<title>Accès parent — ${html(eleve.prenom)} ${html(eleve.nom)}</title>
+<title>${html(textes.titre)} — ${html(eleve.prenom)} ${html(eleve.nom)}</title>
 <style>
   * { box-sizing: border-box; }
   body { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; color: #000;
@@ -47,9 +68,8 @@ function imprimerFiche({ etablissement, eleve, compte }) {
     <div><strong>${html(etablissement?.nom)}</strong><br>${html(etablissement?.sigle || '')}<br>
     ${html([etablissement?.telephone, etablissement?.email].filter(Boolean).join(' · '))}</div>
   </header>
-  <h1>Accès au portail des parents</h1>
-  <p class="eleve">Élève : <strong>${html(eleve.prenom)} ${html(eleve.nom)}</strong>
-    — matricule ${html(eleve.matricule)}${eleve.classe ? ` — ${html(eleve.classe)}` : ''}</p>
+  <h1>${html(textes.titre)}</h1>
+  <p class="eleve">${textes.sujet(eleve)}</p>
   <div class="acces">
     <p>Adresse : <span class="valeur">${html(site)}</span></p>
     <p>Identifiant : <span class="valeur">${html(compte.identifiant)}</span></p>
@@ -60,10 +80,9 @@ function imprimerFiche({ etablissement, eleve, compte }) {
     <li>Saisissez l'identifiant et le mot de passe, exactement comme écrits.</li>
     <li>Choisissez votre mot de passe personnel : celui de cette fiche ne servira plus.</li>
   </ol>
-  <p>Vous pourrez ensuite suivre les notes, les absences et les paiements de votre enfant,
-     et régler les mensualités par Wave.</p>
-  <p class="note">Gardez cette fiche pour vous. En cas de perte, demandez une nouvelle fiche
-     à l'établissement : l'ancien mot de passe cessera alors de fonctionner.
+  <p>${html(textes.usage)}</p>
+  <p class="note">Gardez cette fiche pour vous. En cas de perte, ${html(textes.perte)} :
+     l'ancien mot de passe cessera alors de fonctionner.
      Fiche éditée le ${new Date().toLocaleDateString('fr-FR')}.</p>
 </div>
 <script>window.onload = function () { window.print(); };</script>
@@ -74,9 +93,11 @@ function imprimerFiche({ etablissement, eleve, compte }) {
 
 /**
  * Fenetre affichee juste apres la creation (ou la reinitialisation) d un
- * compte parent : identifiants a remettre, et impression de la fiche.
+ * compte : identifiants a remettre, et impression de la fiche.
+ * `eleve` designe la personne concernee : l eleve (fiche parent) ou
+ * l enseignant lui-meme.
  */
-export default function FicheAccesParent({ eleve, compte, onFermer }) {
+export default function FicheAcces({ eleve, compte, onFermer, destinataire = 'parent' }) {
   const [etablissement, setEtablissement] = useState(null);
 
   useEffect(() => {
@@ -84,13 +105,15 @@ export default function FicheAccesParent({ eleve, compte, onFermer }) {
   }, [compte]);
 
   return (
-    <Modale ouverte={Boolean(compte)} onFermer={onFermer} titre="Fiche d'accès parent" taille="sm">
+    <Modale ouverte={Boolean(compte)} onFermer={onFermer} taille="sm"
+            titre={destinataire === 'parent' ? "Fiche d'accès parent" : "Fiche d'accès enseignant"}>
       {compte && eleve && (
         <div className="space-y-4">
           <p className="text-sm text-slate-500">
-            Compte parent de <strong className="text-slate-800 dark:text-slate-200">
-              {eleve.prenom} {eleve.nom}</strong>. Remettez cette fiche au parent : le mot de passe
-            ne s'affichera plus ensuite.
+            {destinataire === 'parent' ? 'Compte parent de' : 'Compte de'}{' '}
+            <strong className="text-slate-800 dark:text-slate-200">{eleve.prenom} {eleve.nom}</strong>.
+            {' '}Remettez cette fiche {destinataire === 'parent' ? 'au parent' : "à l'enseignant"} :
+            le mot de passe ne s'affichera plus ensuite.
           </p>
           <div className="space-y-2 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 p-4">
             <p className="text-xs text-slate-500">Identifiant</p>
@@ -101,12 +124,13 @@ export default function FicheAccesParent({ eleve, compte, onFermer }) {
             </p>
           </div>
           <p className="text-xs text-slate-500">
-            À la première connexion, le parent choisira son propre mot de passe.
+            À la première connexion, {destinataire === 'parent' ? 'le parent' : "l'enseignant"} choisira
+            son propre mot de passe.
           </p>
           <div className="flex justify-end gap-2 border-t border-slate-200 dark:border-slate-800 pt-3">
             <button type="button" className="bouton-secondaire" onClick={onFermer}>Fermer</button>
             <button type="button" className="bouton-primaire"
-                    onClick={() => imprimerFiche({ etablissement, eleve, compte })}>
+                    onClick={() => imprimerFiche({ etablissement, eleve, compte, destinataire })}>
               <Printer className="h-4 w-4" /> Imprimer la fiche
             </button>
           </div>

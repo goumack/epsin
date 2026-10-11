@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import { Chargement, Erreur, Vide, Modale, Puce, Onglets } from './ui';
 import BulletinOfficiel from './BulletinOfficiel';
 import ParcoursEleve from './ParcoursEleve';
-import FicheAccesParent from './FicheAccesParent';
+import FicheAcces from './FicheAcces';
 
 /**
  * Dossier complet d un eleve : identite, bulletin, detail des notes,
@@ -219,7 +219,7 @@ function CompteParent({ eleve }) {
         </button>
       </div>
       {erreur && <p className="mt-2 text-sm text-red-600">{erreur}</p>}
-      <FicheAccesParent eleve={eleve} compte={fiche} onFermer={() => setFiche(null)} />
+      <FicheAcces eleve={eleve} compte={fiche} onFermer={() => setFiche(null)} />
     </div>
   );
 }

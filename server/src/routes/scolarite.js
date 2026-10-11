@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import { query, transaction } from '../db/pool.js';
 import { authentifier, autoriser, tracer } from '../middleware/auth.js';
+import bcrypt from 'bcryptjs';
 import {
-  filtreEntite, entiteDe, accesAutorise, GESTION_SCOLAIRE,
+  filtreEntite, entiteDe, accesAutorise, GESTION_SCOLAIRE, DIRECTION,
 } from '../middleware/entite.js';
+import { motDePasseTemporaire } from '../db/comptes-parents.js';
 import {
   filtreClassesEnseignant, estEnseignant, accesClasse, enseignantDuCompte,
 } from '../middleware/portee-enseignant.js';
@@ -234,7 +236,9 @@ router.get('/classes/:id', async (req, res, next) => {
                JOIN eleve e ON e.id = i.eleve_id
                WHERE i.classe_id = c.id AND e.statut = 'actif' AND e.sexe = 'F') AS filles,
               (SELECT COUNT(*)::int FROM affectation af WHERE af.classe_id = c.id) AS nb_matieres,
-              (SELECT COUNT(*)::int FROM creneau cr WHERE cr.classe_id = c.id) AS nb_creneaux
+              (SELECT COUNT(*)::int FROM creneau cr WHERE cr.classe_id = c.id) AS nb_creneaux,
+              -- Maitre titulaire (elementaire uniquement)
+              (SELECT cm.enseignant_id FROM classe_maitre cm WHERE cm.classe_id = c.id) AS maitre_id
        FROM classe c
        JOIN niveau n ON n.id = c.niveau_id
        JOIN annee_scolaire a ON a.id = c.annee_id
@@ -273,20 +277,22 @@ router.get('/classes/:id/enseignants', async (req, res, next) => {
     const controle = await verifierClasse(req, req.params.id);
     if (!controle.ok) return res.status(controle.code).json({ erreur: controle.message });
 
+    // Une ligne par matiere du programme du niveau, affectee ou non : une
+    // matiere encore sans enseignant doit apparaitre pour etre attribuee.
     const { rows } = await query(
       `SELECT af.id AS affectation_id,
               m.id AS matiere_id, m.libelle AS matiere, m.couleur,
-              COALESCE(mn.coefficient, 1) AS coefficient,
+              mn.coefficient,
               en.id AS enseignant_id, en.specialite,
               u.prenom, u.nom, u.email, u.telephone
-       FROM affectation af
-       JOIN matiere m ON m.id = af.matiere_id
-       JOIN classe c ON c.id = af.classe_id
-       LEFT JOIN matiere_niveau mn ON mn.matiere_id = m.id AND mn.niveau_id = c.niveau_id
+       FROM classe c
+       JOIN matiere_niveau mn ON mn.niveau_id = c.niveau_id
+       JOIN matiere m ON m.id = mn.matiere_id
+       LEFT JOIN affectation af ON af.classe_id = c.id AND af.matiere_id = m.id
+         AND af.annee_id = c.annee_id
        LEFT JOIN enseignant en ON en.id = af.enseignant_id
        LEFT JOIN utilisateur u ON u.id = en.utilisateur_id
-       WHERE af.classe_id = $1
-         AND af.annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)
+       WHERE c.id = $1
        ORDER BY m.libelle`,
       [req.params.id]
     );
@@ -301,6 +307,22 @@ router.patch('/classes/:id/professeur-principal', autoriser(...GESTION), async (
     if (!controle.ok) return res.status(controle.code).json({ erreur: controle.message });
 
     const { utilisateur_id } = req.body;
+    // Seul un enseignant de l entite de la classe peut en etre le
+    // professeur principal : ce role lui ouvre tout le bulletin des eleves.
+    if (utilisateur_id) {
+      const { rows: ens } = await query(
+        `SELECT en.entite, n.entite AS entite_classe
+         FROM enseignant en
+         JOIN utilisateur u ON u.id = en.utilisateur_id AND u.role = 'enseignant'
+         CROSS JOIN classe c JOIN niveau n ON n.id = c.niveau_id
+         WHERE en.utilisateur_id = $1 AND c.id = $2`,
+        [utilisateur_id, req.params.id]
+      );
+      if (!ens[0]) return res.status(400).json({ erreur: 'Ce compte n est pas un enseignant' });
+      if (ens[0].entite && ens[0].entite !== ens[0].entite_classe) {
+        return res.status(400).json({ erreur: 'Cet enseignant releve de l autre entite' });
+      }
+    }
     const { rows } = await query(
       `UPDATE classe SET prof_principal_id = $2 WHERE id = $1 RETURNING id, prof_principal_id`,
       [req.params.id, utilisateur_id || null]
@@ -585,6 +607,16 @@ router.post('/affectations', autoriser(...GESTION), async (req, res, next) => {
       });
     }
 
+    // La matiere doit faire partie du programme du niveau de la classe
+    const { rows: auProgramme } = await query(
+      `SELECT 1 FROM matiere_niveau mn JOIN classe c ON c.niveau_id = mn.niveau_id
+       WHERE c.id = $1 AND mn.matiere_id = $2`,
+      [classe_id, matiere_id]
+    );
+    if (!auProgramme.length) {
+      return res.status(400).json({ erreur: 'Cette matiere n est pas au programme de ce niveau' });
+    }
+
     const { rows: ar } = await query(`SELECT id FROM annee_scolaire WHERE active LIMIT 1`);
     const { rows } = await query(
       `INSERT INTO affectation (enseignant_id, classe_id, matiere_id, annee_id)
@@ -594,7 +626,163 @@ router.post('/affectations', autoriser(...GESTION), async (req, res, next) => {
        RETURNING *`,
       [enseignant_id, classe_id, matiere_id, ar[0].id]
     );
+    await tracer(req, 'affectation_enseignant', 'classe', Number(classe_id), { enseignant_id, matiere_id });
     res.status(201).json(rows[0]);
+  } catch (err) { next(err); }
+});
+
+/** Retire un enseignant d une matiere : la matiere redevient « a pourvoir ». */
+router.delete('/affectations/:id', autoriser(...GESTION), async (req, res, next) => {
+  try {
+    const { rows: af } = await query(`SELECT classe_id FROM affectation WHERE id = $1`, [req.params.id]);
+    if (!af[0]) return res.status(404).json({ erreur: 'Affectation introuvable' });
+    const controle = await verifierClasse(req, af[0].classe_id);
+    if (!controle.ok) return res.status(controle.code).json({ erreur: controle.message });
+
+    await query(`DELETE FROM affectation WHERE id = $1`, [req.params.id]);
+    await tracer(req, 'retrait_affectation', 'classe', af[0].classe_id, { affectation_id: Number(req.params.id) });
+    res.json({ message: 'Affectation retiree' });
+  } catch (err) { next(err); }
+});
+
+/**
+ * Maitre titulaire d une classe elementaire. Il enseigne TOUS les domaines
+ * du CEB et est d office professeur principal : une seule operation pose
+ * le maitre, ses affectations domaine par domaine et le titre de
+ * professeur principal. `enseignant_id: null` retire le maitre.
+ */
+router.put('/classes/:id/maitre', autoriser(...GESTION), async (req, res, next) => {
+  try {
+    const controle = await verifierClasse(req, req.params.id);
+    if (!controle.ok) return res.status(controle.code).json({ erreur: controle.message });
+
+    const { rows: cl } = await query(
+      `SELECT c.id, c.annee_id, c.niveau_id, n.entite
+       FROM classe c JOIN niveau n ON n.id = c.niveau_id WHERE c.id = $1`,
+      [req.params.id]
+    );
+    if (cl[0].entite !== 'scolaire') {
+      return res.status(400).json({
+        erreur: 'Le maitre unique concerne l elementaire ; au secondaire, affectez un professeur par matiere',
+      });
+    }
+
+    const enseignantId = req.body.enseignant_id ? Number(req.body.enseignant_id) : null;
+    let utilisateurId = null;
+    if (enseignantId) {
+      const { rows: ens } = await query(
+        `SELECT utilisateur_id, entite FROM enseignant WHERE id = $1`, [enseignantId]
+      );
+      if (!ens[0]) return res.status(404).json({ erreur: 'Enseignant introuvable' });
+      if (ens[0].entite && ens[0].entite !== 'scolaire') {
+        return res.status(400).json({ erreur: 'Cet enseignant releve du moyen/secondaire' });
+      }
+      utilisateurId = ens[0].utilisateur_id;
+    }
+
+    await transaction(async (client) => {
+      await client.query(`DELETE FROM affectation WHERE classe_id = $1 AND annee_id = $2`,
+        [cl[0].id, cl[0].annee_id]);
+      await client.query(`DELETE FROM classe_maitre WHERE classe_id = $1`, [cl[0].id]);
+      if (enseignantId) {
+        await client.query(
+          `INSERT INTO classe_maitre (classe_id, enseignant_id, annee_id) VALUES ($1,$2,$3)`,
+          [cl[0].id, enseignantId, cl[0].annee_id]
+        );
+        // Une affectation par domaine du niveau : le meme mecanisme de notes
+        // que le secondaire, sans logique a part
+        await client.query(
+          `INSERT INTO affectation (enseignant_id, classe_id, matiere_id, annee_id)
+           SELECT $1, $2, mn.matiere_id, $3 FROM matiere_niveau mn WHERE mn.niveau_id = $4`,
+          [enseignantId, cl[0].id, cl[0].annee_id, cl[0].niveau_id]
+        );
+      }
+      await client.query(`UPDATE classe SET prof_principal_id = $2 WHERE id = $1`,
+        [cl[0].id, utilisateurId]);
+    });
+
+    await tracer(req, 'maitre_titulaire', 'classe', cl[0].id, { enseignant_id: enseignantId });
+    res.json({ message: enseignantId ? 'Maitre titulaire designe' : 'Maitre retire' });
+  } catch (err) { next(err); }
+});
+
+// ---------- Creation des enseignants ----------
+/**
+ * La direction cree elle-meme les comptes de ses enseignants. Le compte est
+ * rattache d office a l entite du createur (un directeur cree des maitres,
+ * un proviseur des professeurs) ; seul l administrateur choisit l entite.
+ * Comme pour les parents : mot de passe a usage unique, a changer a la
+ * premiere connexion, remis sur une fiche d acces.
+ */
+router.post('/enseignants', autoriser(...DIRECTION), async (req, res, next) => {
+  try {
+    const prenom = String(req.body.prenom || '').trim();
+    const nom = String(req.body.nom || '').trim();
+    const email = String(req.body.email || '').trim().toLowerCase() || null;
+    const telephone = String(req.body.telephone || '').trim() || null;
+    const specialite = String(req.body.specialite || '').trim() || null;
+    if (!prenom || !nom) return res.status(400).json({ erreur: 'Prenom et nom requis' });
+    if (!email && !telephone) {
+      return res.status(400).json({ erreur: 'Email ou telephone requis : il sert d identifiant de connexion' });
+    }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ erreur: 'Email invalide' });
+    }
+
+    const entite = entiteDe(req.user) || req.body.entite;
+    if (!['scolaire', 'secondaire'].includes(entite)) {
+      return res.status(400).json({ erreur: 'Entite requise : scolaire ou secondaire' });
+    }
+
+    const motDePasse = motDePasseTemporaire();
+    const cree = await transaction(async (client) => {
+      const { rows: u } = await client.query(
+        `INSERT INTO utilisateur (email, telephone, mot_de_passe, role, prenom, nom,
+                                  entite, doit_changer_mdp)
+         VALUES ($1,$2,$3,'enseignant',$4,$5,$6,true) RETURNING id`,
+        [email, telephone, await bcrypt.hash(motDePasse, 10), prenom, nom, entite]
+      );
+      const { rows: en } = await client.query(
+        `INSERT INTO enseignant (utilisateur_id, specialite, entite)
+         VALUES ($1,$2,$3) RETURNING id`,
+        [u[0].id, specialite, entite]
+      );
+      return { utilisateur_id: u[0].id, enseignant_id: en[0].id };
+    });
+
+    await tracer(req, 'creation_enseignant', 'utilisateur', cree.utilisateur_id, { entite });
+    res.status(201).json({
+      id: cree.enseignant_id, utilisateur_id: cree.utilisateur_id, prenom, nom, entite, specialite,
+      // Le mot de passe n est renvoye qu ici, pour la fiche d acces
+      compte: { identifiant: email || telephone, mot_de_passe: motDePasse },
+    });
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ erreur: 'Cet email ou ce telephone est deja utilise par un compte' });
+    }
+    next(err);
+  }
+});
+
+/** Nouvelle fiche d acces pour un enseignant (mot de passe oublie). */
+router.post('/enseignants/:id/acces', autoriser(...DIRECTION), async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT en.entite, u.id AS utilisateur_id, u.email, u.telephone
+       FROM enseignant en JOIN utilisateur u ON u.id = en.utilisateur_id WHERE en.id = $1`,
+      [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ erreur: 'Enseignant introuvable' });
+    if (!accesAutorise(req.user, rows[0].entite)) {
+      return res.status(403).json({ erreur: 'Cet enseignant releve de l autre entite' });
+    }
+    const motDePasse = motDePasseTemporaire();
+    await query(
+      `UPDATE utilisateur SET mot_de_passe = $2, doit_changer_mdp = true, actif = true WHERE id = $1`,
+      [rows[0].utilisateur_id, await bcrypt.hash(motDePasse, 10)]
+    );
+    await tracer(req, 'reinitialisation_mot_de_passe', 'utilisateur', rows[0].utilisateur_id);
+    res.json({ identifiant: rows[0].email || rows[0].telephone, mot_de_passe: motDePasse });
   } catch (err) { next(err); }
 });
 

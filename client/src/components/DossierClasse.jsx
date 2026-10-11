@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import {
   Users, MapPin, GraduationCap, Trophy, CalendarDays, UserCheck,
 } from 'lucide-react';
-import { get, dateFr, couleurNote } from '../lib/api';
+import { get, post, put, patch, supprimer, dateFr, couleurNote } from '../lib/api';
+import { useAuth } from '../context/AuthContext';
 import { Chargement, Erreur, Vide, Modale, Puce, Onglets } from './ui';
 import DossierEleve from './DossierEleve';
 
@@ -27,6 +28,9 @@ export default function DossierClasse({ classeId, onFermer }) {
       .then(setClasse)
       .catch((e) => setErreur(e.message));
   }, [classeId]);
+
+  // Apres une designation (professeur principal, maitre) : sans vider l ecran
+  const recharger = () => get(`/scolarite/classes/${classeId}`).then(setClasse).catch(() => {});
 
   const onglets = [
     { cle: 'infos', libelle: 'Informations' },
@@ -53,11 +57,11 @@ export default function DossierClasse({ classeId, onFermer }) {
               <Onglets onglets={onglets} actif={onglet} onChange={setOnglet} />
             </div>
 
-            {onglet === 'infos' && <Informations classe={classe} />}
+            {onglet === 'infos' && <Informations classe={classe} onChange={recharger} />}
             {onglet === 'eleves' && (
               <ListeEleves classeId={classeId} onOuvrirEleve={setEleveOuvert} />
             )}
-            {onglet === 'equipe' && <Equipe classeId={classeId} entite={classe.entite} />}
+            {onglet === 'equipe' && <Equipe classe={classe} onChange={recharger} />}
             {onglet === 'edt' && <EmploiDuTemps classeId={classeId} />}
             {onglet === 'resultats' && <Resultats classeId={classeId} />}
           </div>
@@ -104,7 +108,9 @@ function EnTete({ classe }) {
   );
 }
 
-function Informations({ classe }) {
+function Informations({ classe, onChange }) {
+  const { aRole } = useAuth();
+  const gestion = aRole('admin', 'censeur', 'directeur', 'proviseur');
   const tuiles = [
     ['Effectif', classe.effectif, Users],
     ['Garçons', classe.garcons, Users],
@@ -143,6 +149,14 @@ function Informations({ classe }) {
             Aucun professeur principal désigné pour cette classe.
           </p>
         )}
+        {gestion && (classe.entite === 'scolaire' ? (
+          <p className="mt-2 text-xs text-slate-500">
+            À l'élémentaire, le maître titulaire est professeur principal : désignez-le dans l'onglet
+            {' '}<strong>Équipe pédagogique</strong>.
+          </p>
+        ) : (
+          <ChoixProfPrincipal classe={classe} onChange={onChange} />
+        ))}
       </div>
 
       <div className="border-t border-slate-200 dark:border-slate-800 pt-4">
@@ -223,25 +237,103 @@ function ListeEleves({ classeId, onOuvrirEleve }) {
   );
 }
 
-function Equipe({ classeId, entite }) {
-  const [equipe, setEquipe] = useState(null);
-
+/** Enseignants de l entite de la classe, pour les listes de choix. */
+function useEnseignants(actif) {
+  const [liste, setListe] = useState([]);
   useEffect(() => {
-    setEquipe(null);
-    get(`/scolarite/classes/${classeId}/enseignants`)
+    if (actif) get('/scolarite/enseignants').then(setListe).catch(() => setListe([]));
+  }, [actif]);
+  return liste;
+}
+
+/**
+ * Designation du professeur principal (moyen/secondaire). A l elementaire,
+ * c est d office le maitre titulaire : il se change dans l onglet Equipe.
+ */
+function ChoixProfPrincipal({ classe, onChange }) {
+  const enseignants = useEnseignants(true);
+  const [choix, setChoix] = useState(classe.pp_id ? String(classe.pp_id) : '');
+  const [envoi, setEnvoi] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const enregistrer = async () => {
+    setEnvoi(true);
+    setMessage('');
+    try {
+      await patch(`/scolarite/classes/${classe.id}/professeur-principal`, {
+        utilisateur_id: choix ? Number(choix) : null,
+      });
+      onChange();
+    } catch (e) {
+      setMessage(e.message);
+    } finally {
+      setEnvoi(false);
+    }
+  };
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <select className="champ w-auto min-w-[14rem]" value={choix} onChange={(e) => setChoix(e.target.value)}
+              aria-label="Professeur principal">
+        <option value="">— Aucun —</option>
+        {enseignants.map((e) => (
+          <option key={e.id} value={e.utilisateur_id}>
+            {e.prenom} {e.nom}{e.specialite ? ` · ${e.specialite}` : ''}
+          </option>
+        ))}
+      </select>
+      <button type="button" className="bouton-primaire px-3 py-1.5" disabled={envoi}
+              onClick={enregistrer}>
+        {envoi ? 'Enregistrement…' : 'Désigner'}
+      </button>
+      {message && <p className="w-full text-sm text-red-600">{message}</p>}
+    </div>
+  );
+}
+
+function Equipe({ classe, onChange }) {
+  const { aRole } = useAuth();
+  const gestion = aRole('admin', 'censeur', 'directeur', 'proviseur');
+  const enseignants = useEnseignants(gestion);
+  const [equipe, setEquipe] = useState(null);
+  const [message, setMessage] = useState('');
+  const [enCours, setEnCours] = useState(null);
+  const [maitreChoisi, setMaitreChoisi] = useState(classe.maitre_id ? String(classe.maitre_id) : '');
+
+  const charger = () => {
+    get(`/scolarite/classes/${classe.id}/enseignants`)
       .then(setEquipe)
       .catch(() => setEquipe([]));
-  }, [classeId]);
+  };
+  useEffect(() => { setEquipe(null); charger(); }, [classe.id]);
+
+  // Toute modification recharge l equipe et le dossier (professeur principal)
+  const agir = async (cle, action) => {
+    setEnCours(cle);
+    setMessage('');
+    try {
+      await action();
+      charger();
+      onChange();
+    } catch (e) {
+      setMessage(e.message);
+    } finally {
+      setEnCours(null);
+    }
+  };
 
   if (!equipe) return <Chargement />;
   if (!equipe.length) {
-    return <Vide titre="Aucun domaine affecté" texte="Affectez un maître à cette classe." />;
+    return (
+      <Vide titre="Aucune matière au programme de ce niveau"
+            texte="Ajoutez les matières et leurs coefficients dans Classes → Matières." />
+    );
   }
 
   // A l elementaire, un seul maitre prend en charge les 4 domaines du CEB :
   // une carte par matiere repeterait 4 fois le meme nom, ce qui est confus.
   // On affiche donc une seule carte "maitre" avec ses domaines en-dessous.
-  if (entite === 'scolaire') {
+  if (classe.entite === 'scolaire') {
     const maitre = equipe.find((a) => a.nom);
     return (
       <div className="space-y-3">
@@ -255,7 +347,7 @@ function Equipe({ classeId, entite }) {
                 {maitre.prenom?.[0]}{maitre.nom?.[0]}
               </div>
               <div className="min-w-0">
-                <p className="font-medium">{maitre.prenom} {maitre.nom}</p>
+                <p className="font-medium">{maitre.prenom} {maitre.nom} <Puce ton="info">titulaire · professeur principal</Puce></p>
                 <p className="text-sm text-slate-500">
                   {maitre.specialite || 'Maître polyvalent'}
                   {maitre.email && ` · ${maitre.email}`}
@@ -266,9 +358,30 @@ function Equipe({ classeId, entite }) {
             <p className="text-sm text-slate-400">Aucun maître affecté à cette classe</p>
           )}
 
+          {gestion && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 dark:border-slate-800 pt-3">
+              <select className="champ w-auto min-w-[14rem]" aria-label="Maître titulaire"
+                      value={maitreChoisi} onChange={(e) => setMaitreChoisi(e.target.value)}>
+                <option value="">— Aucun maître —</option>
+                {enseignants.map((e) => (
+                  <option key={e.id} value={e.id}>{e.prenom} {e.nom}</option>
+                ))}
+              </select>
+              <button type="button" className="bouton-primaire px-3 py-1.5" disabled={enCours === 'maitre'}
+                      onClick={() => agir('maitre', () => put(`/scolarite/classes/${classe.id}/maitre`, {
+                        enseignant_id: Number(maitreChoisi) || null,
+                      }))}>
+                {enCours === 'maitre' ? 'Enregistrement…' : maitre ? 'Changer de maître' : 'Désigner le maître'}
+              </button>
+              <p className="w-full text-xs text-slate-500">
+                Le maître titulaire enseigne les 4 domaines et devient professeur principal de la classe.
+              </p>
+            </div>
+          )}
+
           <div className="mt-4 grid gap-2 border-t border-slate-100 dark:border-slate-800 pt-3 sm:grid-cols-2">
             {equipe.map((a) => (
-              <div key={a.affectation_id} className="flex items-center justify-between gap-2 text-sm">
+              <div key={a.matiere_id} className="flex items-center justify-between gap-2 text-sm">
                 <span className="flex items-center gap-2">
                   <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: a.couleur }} />
                   {a.matiere}
@@ -278,22 +391,24 @@ function Equipe({ classeId, entite }) {
             ))}
           </div>
         </div>
+        {message && <p className="text-sm text-red-600">{message}</p>}
       </div>
     );
   }
 
   // Moyen et secondaire : un professeur different par matiere
+  const aPourvoir = equipe.filter((a) => !a.nom).length;
   return (
     <div className="space-y-2">
       <p className="text-sm text-slate-500">
-        {equipe.length} matière{equipe.length > 1 ? 's' : ''} enseignée{equipe.length > 1 ? 's' : ''}
+        {equipe.length} matière{equipe.length > 1 ? 's' : ''} au programme
+        {aPourvoir > 0 && <span className="text-amber-600"> · {aPourvoir} sans professeur</span>}
       </p>
+      {message && <p className="text-sm text-red-600">{message}</p>}
       <div className="grid gap-3 sm:grid-cols-2">
         {equipe.map((a) => (
-          <div
-            key={a.affectation_id}
-            className="rounded-lg border border-slate-200 dark:border-slate-800 p-3"
-          >
+          <div key={a.matiere_id}
+               className={`rounded-lg border p-3 ${a.nom ? 'border-slate-200 dark:border-slate-800' : 'border-dashed border-amber-300 dark:border-amber-800'}`}>
             <div className="mb-2 flex items-center justify-between gap-2">
               <span className="flex items-center gap-2 font-medium">
                 <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: a.couleur }} />
@@ -306,13 +421,34 @@ function Equipe({ classeId, entite }) {
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-800 text-xs font-semibold">
                   {a.prenom?.[0]}{a.nom?.[0]}
                 </div>
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <p className="truncate text-sm">{a.prenom} {a.nom}</p>
                   {a.email && <p className="truncate text-xs text-slate-400">{a.email}</p>}
                 </div>
+                {gestion && (
+                  <button type="button" className="text-xs text-slate-500 underline"
+                          disabled={enCours === a.matiere_id}
+                          onClick={() => agir(a.matiere_id, () => supprimer(`/scolarite/affectations/${a.affectation_id}`))}>
+                    Retirer
+                  </button>
+                )}
               </div>
-            ) : (
+            ) : !gestion ? (
               <p className="text-sm text-slate-400">Aucun enseignant affecté</p>
+            ) : null}
+            {gestion && (
+              <select className="champ mt-2 py-1.5 text-sm" aria-label={`Professeur de ${a.matiere}`}
+                      value="" disabled={enCours === a.matiere_id}
+                      onChange={(e) => e.target.value && agir(a.matiere_id, () => post('/scolarite/affectations', {
+                        classe_id: classe.id, matiere_id: a.matiere_id, enseignant_id: Number(e.target.value),
+                      }))}>
+                <option value="">{a.nom ? 'Remplacer par…' : 'Affecter un professeur…'}</option>
+                {enseignants.map((e) => (
+                  <option key={e.id} value={e.id}>
+                    {e.prenom} {e.nom}{e.specialite ? ` · ${e.specialite}` : ''}
+                  </option>
+                ))}
+              </select>
             )}
           </div>
         ))}

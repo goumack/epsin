@@ -142,7 +142,7 @@ router.get('/utilisateurs', autoriser('admin'), async (req, res, next) => {
 
 router.post('/utilisateurs', autoriser('admin'), async (req, res, next) => {
   try {
-    const { email, telephone, mot_de_passe, role, prenom, nom, specialite } = req.body;
+    const { email, telephone, mot_de_passe, role, prenom, nom, specialite, entite } = req.body;
     if (!role || !prenom || !nom || !mot_de_passe) {
       return res.status(400).json({ erreur: 'Role, prenom, nom et mot de passe requis' });
     }
@@ -164,9 +164,13 @@ router.post('/utilisateurs', autoriser('admin'), async (req, res, next) => {
       // Un enseignant a une fiche dediee
       if (role === 'enseignant') {
         await client.query(
-          `INSERT INTO enseignant (utilisateur_id, specialite) VALUES ($1,$2)`,
-          [rows[0].id, specialite || null]
+          // Rattache a une entite, sans quoi la direction ne le verrait pas
+          `INSERT INTO enseignant (utilisateur_id, specialite, entite) VALUES ($1,$2,$3)`,
+          [rows[0].id, specialite || null, ['scolaire', 'secondaire'].includes(entite) ? entite : null]
         );
+        // Le compte porte la meme entite : c est elle qui cloisonne ses acces
+        await client.query(`UPDATE utilisateur SET entite = $2 WHERE id = $1`,
+          [rows[0].id, ['scolaire', 'secondaire'].includes(entite) ? entite : null]);
       }
       return rows[0];
     });
