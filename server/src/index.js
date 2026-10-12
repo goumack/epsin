@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -17,18 +19,42 @@ import personnelRoutes from './routes/personnel.js';
 import parcoursRoutes from './routes/parcours.js';
 import modulesRoutes from './routes/modules.js';
 import paiementsEnLigneRoutes, { webhookWave } from './routes/paiements-en-ligne.js';
+import { routesServeur, routesPoste } from './routes/synchronisation.js';
+import { pool } from './db/pool.js';
+import { demarrerSynchroAuto, distantHttp } from './sync/poste.js';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-app.use(helmet());
+/**
+ * Modes de fonctionnement (EPSIN_MODE) :
+ *   (absent)   serveur classique, base unique ;
+ *   replique   serveur en ligne, copie du poste : le personnel y consulte,
+ *              seuls les parents y agissent ;
+ *   poste      poste de l ecole (programme Windows) : fait foi, fonctionne
+ *              sans internet, se synchronise des que la connexion revient.
+ */
+const MODE = process.env.EPSIN_MODE || '';
+
+// Interface servie par l API elle-meme (programme Windows) : un seul
+// serveur pour tout. Sa politique de securite de contenu par defaut
+// bloquerait l impression des fiches (fenetre ecrite a la volee).
+const CLIENT_DIST = process.env.CLIENT_DIST;
+const servirInterface = Boolean(CLIENT_DIST && existsSync(join(CLIENT_DIST, 'index.html')));
+
+app.use(servirInterface
+  ? helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false })
+  : helmet());
 app.use(cors({ origin: process.env.CORS_ORIGIN?.split(',') || '*' }));
 // Webhook Wave : la signature porte sur le corps BRUT, il doit donc etre
 // recu avant que express.json() ne le transforme.
 app.post('/api/paiements-en-ligne/wave/webhook',
   express.raw({ type: '*/*', limit: '100kb' }), webhookWave);
+
+// Synchronisation avec le poste de l ecole : les envois peuvent etre gros
+app.use('/api/sync', express.json({ limit: '50mb' }), routesServeur);
 
 app.use(express.json({ limit: '2mb' }));
 // Les logs HTTP noieraient la sortie des tests
@@ -71,7 +97,14 @@ app.use('/api/tableau-bord', tableauBordRoutes);
 app.use('/api/personnel', personnelRoutes);
 app.use('/api/parcours', parcoursRoutes);
 app.use('/api/paiements-en-ligne', paiementsEnLigneRoutes);
+if (MODE === 'poste') app.use('/api/synchro', routesPoste);
 app.use('/api', modulesRoutes);
+
+if (servirInterface) {
+  app.use(express.static(CLIENT_DIST, { index: false }));
+  // Application a page unique : toute adresse hors /api renvoie l interface
+  app.get(/^(?!\/api\/).*/, (req, res) => res.sendFile(join(CLIENT_DIST, 'index.html')));
+}
 
 app.use((req, res) => res.status(404).json({ erreur: 'Route introuvable' }));
 
@@ -88,8 +121,14 @@ app.use((err, req, res, _next) => {
 // de port. En dehors du mode test, le comportement est inchange.
 if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {
-    console.log(`EPSIN API demarree sur http://localhost:${PORT}`);
+    console.log(`EPSIN API demarree sur http://localhost:${PORT}${MODE ? ` (mode ${MODE})` : ''}`);
   });
+  // Poste de l ecole : synchronisation automatique des que possible
+  if (MODE === 'poste' && process.env.SYNC_URL && process.env.SYNC_JETON) {
+    demarrerSynchroAuto(pool, distantHttp(process.env.SYNC_URL, process.env.SYNC_JETON), {
+      intervalle: Number(process.env.SYNC_INTERVALLE_S || 30) * 1000,
+    });
+  }
 }
 
 export default app;

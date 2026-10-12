@@ -1,13 +1,17 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pool } from './pool.js';
 
 const ici = dirname(fileURLToPath(import.meta.url));
 const dossier = join(ici, '..', '..', 'migrations');
 
-async function migrer() {
-  const client = await pool.connect();
+/**
+ * Applique les migrations manquantes, dans l ordre. Reutilisable : le
+ * programme Windows l appelle a chaque demarrage. Ne ferme pas le pool.
+ */
+export async function appliquerMigrations(base = pool, { journal = console.log } = {}) {
+  const client = await base.connect();
   try {
     await client.query(`
       CREATE TABLE IF NOT EXISTS migration (
@@ -19,9 +23,10 @@ async function migrer() {
     const deja = new Set(rows.map((r) => r.nom));
     const fichiers = readdirSync(dossier).filter((f) => f.endsWith('.sql')).sort();
 
+    let appliquees = 0;
     for (const fichier of fichiers) {
       if (deja.has(fichier)) {
-        console.log(`  = ${fichier} (deja applique)`);
+        journal(`  = ${fichier} (deja applique)`);
         continue;
       }
       const sql = readFileSync(join(dossier, fichier), 'utf8');
@@ -30,20 +35,35 @@ async function migrer() {
         await client.query(sql);
         await client.query(`INSERT INTO migration (nom) VALUES ($1)`, [fichier]);
         await client.query('COMMIT');
-        console.log(`  + ${fichier}`);
+        appliquees++;
+        journal(`  + ${fichier}`);
       } catch (err) {
         await client.query('ROLLBACK');
         throw new Error(`Echec sur ${fichier} : ${err.message}`);
       }
     }
-    console.log('Migrations terminees.');
+
+    // Une table ajoutee par une migration doit etre suivie par la
+    // synchronisation : on repose les declencheurs du journal.
+    if (appliquees) {
+      const { rows: f } = await client.query(
+        `SELECT 1 FROM pg_proc WHERE proname = 'sync_installer_declencheurs'`
+      );
+      if (f.length) await client.query(`SELECT sync_installer_declencheurs()`);
+    }
+    journal('Migrations terminees.');
+    return appliquees;
   } finally {
     client.release();
-    await pool.end();
   }
 }
 
-migrer().catch((err) => {
-  console.error(err.message);
-  process.exit(1);
-});
+// Lance en ligne de commande : npm run migrate
+if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+  appliquerMigrations()
+    .then(() => pool.end())
+    .catch((err) => {
+      console.error(err.message);
+      process.exit(1);
+    });
+}
