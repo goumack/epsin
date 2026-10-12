@@ -4,7 +4,7 @@ import { authentifier, autoriser, tracer } from '../middleware/auth.js';
 import { eleveSuivi, estTuteur } from '../middleware/portee-tuteur.js';
 import { prochainNumeroRecu } from '../db/recus.js';
 import {
-  moisDeLAnnee, moisCourant, etatDesMois, montantPourMois, repartirVersement,
+  moisDeLAnnee, moisDuFrais, moisCourant, etatDesMois, montantPourMois, repartirVersement,
 } from '../metier/mensualites.js';
 import {
   waveConfigure, modePaiement, lienAvecMontant,
@@ -55,7 +55,7 @@ async function mensualitesDe(eleveId, anneeId = null, db = { query }) {
   if (!insc[0]) return { annee: an[0], mois: [], frais: [] };
 
   const { rows: frais } = await db.query(
-    `SELECT f.id, f.libelle, f.montant,
+    `SELECT f.id, f.libelle, f.montant, f.mois_fin,
             COALESCE((SELECT SUM(p.montant) FROM paiement p
                       WHERE p.eleve_id = $1 AND p.frais_id = f.id
                         AND p.annee_id = f.annee_id AND NOT p.annule), 0) AS paye
@@ -76,7 +76,9 @@ async function mensualitesDe(eleveId, anneeId = null, db = { query }) {
       ...f,
       paye: Number(f.paye),
       montant: Number(f.montant),
-      mois: etatDesMois(mois, f.montant, f.paye),
+      // « D octobre a juin » : chaque frais s arrete a son dernier mois du
+      listeMois: moisDuFrais(mois, f.mois_fin),
+      mois: etatDesMois(moisDuFrais(mois, f.mois_fin), f.montant, f.paye),
     })),
   };
 }
@@ -107,12 +109,12 @@ export async function confirmerPaiement(id, {
       : null;
     const transactionFinale = transactionId || pel.transaction_id;
 
-    const { mois, frais } = await mensualitesDe(pel.eleve_id, pel.annee_id, client);
+    const { frais } = await mensualitesDe(pel.eleve_id, pel.annee_id, client);
     const f = frais.find((x) => x.id === pel.frais_id);
     // Le frais a pu etre retire entre-temps : l argent est quand meme recu,
     // on l impute sans mois plutot que de le perdre.
     const lignes = f
-      ? repartirVersement(mois, f.montant, f.paye, versement)
+      ? repartirVersement(f.listeMois, f.montant, f.paye, versement)
       : [{ mois: null, montant: versement }];
 
     const recus = [];

@@ -5,7 +5,7 @@ import {
 import {
   Plus, TrendingUp, TrendingDown, Wallet, AlertTriangle, Ban, Printer, CheckCircle2,
 } from 'lucide-react';
-import { get, post, patch, fcfa, dateFr } from '../lib/api';
+import { get, post, put, patch, fcfa, dateFr } from '../lib/api';
 import {
   Chargement, Erreur, Vide, Modale, Puce, Onglets, Statistique, Recherche, useToast,
 } from '../components/ui';
@@ -247,14 +247,28 @@ function Paiements() {
 /** Frais d inscription : ponctuel, obligatoire, et nomme comme tel. */
 const estInscription = (fr) => !fr.recurrent && /inscri/i.test(fr.libelle);
 
+/** Repartit un montant libre sur les mois a regler, comme le serveur. */
+function ventiler(aRegler, montant) {
+  const lignes = [];
+  let r = montant;
+  for (const m of aRegler) {
+    if (r <= 0) break;
+    const part = Math.min(r, Number(m.reste_du));
+    lignes.push({ mois: m.mois, part, du: Number(m.reste_du) });
+    r -= part;
+  }
+  return lignes;
+}
+
 /**
- * Encaissement au guichet. `eleveInitial` ouvre le formulaire sur un eleve
- * deja choisi (depuis son dossier, ou juste apres son inscription) ;
- * `preselection="inscription"` y place en plus ses frais d inscription.
+ * Encaissement au guichet : on coche les frais que la famille regle —
+ * a l inscription typiquement inscription, droit d inscription, blouse,
+ * assurance, et souvent un ou plusieurs mois — et le tout donne UN seul
+ * encaissement et UN seul recu.
  *
- * Pour un frais mensuel, deux facons de payer, comme sur le portail parent :
- * un nombre de mois complets (avance de plusieurs mois possible), ou un
- * montant libre (avance partielle), reparti mois par mois par le serveur.
+ * Seuls les frais du niveau de l eleve sont proposes, avec ce qui reste du.
+ * `eleveInitial` ouvre le formulaire sur un eleve deja choisi ;
+ * `preselection="inscription"` coche les frais ponctuels encore dus.
  */
 export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveInitial = null, preselection = null }) {
   const [recherche, setRecherche] = useState('');
@@ -262,42 +276,41 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
   const [eleve, setEleve] = useState(null);
   const [situation, setSituation] = useState(null);
   const [echeancier, setEcheancier] = useState([]);
-  const [frais, setFrais] = useState([]);
-  const [f, setF] = useState({ frais_id: '', montant: '', mode: 'especes', reference: '' });
-  const [libre, setLibre] = useState(false);
-  const [nbMois, setNbMois] = useState(1);
+  // Par frais : { coche, montant (ponctuel ou avance), libre, nbMois }
+  const [choix, setChoix] = useState({});
+  const [mode, setMode] = useState('especes');
+  const [reference, setReference] = useState('');
   const [envoi, setEnvoi] = useState(false);
 
-  /** Situation et echeancier de l eleve choisi. */
-  const chargerEleve = async (e) => {
+  /** Situation et echeancier de l eleve, puis frais coches par defaut. */
+  const chargerEleve = async (e, preselectionner) => {
     const [sit, ech] = await Promise.all([
       get(`/finances/situation/${e.id}`).catch(() => null),
       get(`/finances/echeancier/${e.id}`).catch(() => []),
     ]);
     setSituation(sit);
     setEcheancier(ech);
-    return sit;
+    const initial = {};
+    for (const l of sit?.lignes || []) {
+      const mensuel = ech.find((x) => x.id === l.id);
+      const echus = mensuel
+        ? mensuel.mois.filter((m) => m.statut === 'en_retard' || m.statut === 'partiel').length : 0;
+      initial[l.id] = {
+        // A l inscription : tous les frais ponctuels obligatoires encore dus
+        coche: preselectionner && !l.recurrent && l.obligatoire && Number(l.reste) > 0,
+        montant: String(Math.round(l.recurrent ? l.montant : (Number(l.reste) || l.montant))),
+        libre: false,
+        nbMois: Math.max(echus, 1),
+      };
+    }
+    setChoix(initial);
   };
 
   useEffect(() => {
     if (!ouvert) return;
     setRecherche(''); setEleve(eleveInitial); setSituation(null); setEcheancier([]);
-    setF({ frais_id: '', montant: '', mode: 'especes', reference: '' });
-    setLibre(false); setNbMois(1);
-    (async () => {
-      const [bareme, sit] = await Promise.all([
-        get('/finances/frais').catch(() => []),
-        eleveInitial ? chargerEleve(eleveInitial) : null,
-      ]);
-      setFrais(bareme);
-      if (preselection === 'inscription') {
-        // Les frais d inscription applicables a l eleve (son niveau ou tous)
-        const ligne = sit?.lignes?.find(estInscription) || bareme.find(estInscription);
-        if (ligne) {
-          setF((v) => ({ ...v, frais_id: String(ligne.id), montant: String(Math.round(ligne.reste ?? ligne.montant)) }));
-        }
-      }
-    })();
+    setChoix({}); setMode('especes'); setReference('');
+    if (eleveInitial) chargerEleve(eleveInitial, preselection === 'inscription');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ouvert]);
 
@@ -313,74 +326,52 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
   const choisir = (e) => {
     setEleve(e);
     setEleves([]);
-    chargerEleve(e);
+    chargerEleve(e, false);
   };
+  const maj = (id, champ, valeur) => setChoix((c) => ({ ...c, [id]: { ...c[id], [champ]: valeur } }));
 
-  // Frais mensuel choisi : son echeancier, mois par mois
-  const mensuel = echeancier.find((x) => String(x.id) === f.frais_id) || null;
-  const aRegler = mensuel ? mensuel.mois.filter((m) => m.statut !== 'paye') : [];
-  const resteAnnee = aRegler.reduce((s, m) => s + Number(m.reste_du), 0);
-  const nb = Math.min(Math.max(nbMois, 1), aRegler.length || 1);
-  const totalMois = aRegler.slice(0, nb).reduce((s, m) => s + Number(m.reste_du), 0);
-  const montantSaisi = Math.round(Number(f.montant)) || 0;
-
-  // Apercu de la ventilation d un montant libre, comme le fera le serveur
-  const apercu = [];
-  if (mensuel && libre) {
-    let r = montantSaisi;
-    for (const m of aRegler) {
-      if (r <= 0) break;
-      const part = Math.min(r, Number(m.reste_du));
-      apercu.push({ mois: m.mois, part, du: Number(m.reste_du) });
-      r -= part;
-    }
-  }
-
-  const montantFinal = mensuel && !libre ? totalMois : montantSaisi;
-
-  // Choisir un frais propose ce qui reste a payer dessus (sinon son montant)
-  const choisirFrais = (e) => {
-    const id = e.target.value;
-    const ligne = situation?.lignes?.find((l) => String(l.id) === id);
-    const bareme = frais.find((fr) => String(fr.id) === id);
-    const ech = echeancier.find((x) => String(x.id) === id);
-    if (ech) {
-      // Par defaut : les mois echus non regles, au moins un
-      const echus = ech.mois.filter((m) => m.statut === 'en_retard' || m.statut === 'partiel').length;
-      setNbMois(Math.max(echus, 1));
-      setLibre(false);
-    }
-    const propose = ligne ? (ligne.recurrent ? ligne.montant : ligne.reste) : bareme?.montant;
-    setF((v) => ({ ...v, frais_id: id, montant: propose ? String(Math.round(propose)) : v.montant }));
-  };
+  // Montant et elements a envoyer, frais coche par frais coche
+  const lignes = (situation?.lignes || []).map((l) => {
+    const c = choix[l.id] || {};
+    const mensuel = echeancier.find((x) => x.id === l.id);
+    const aRegler = mensuel ? mensuel.mois.filter((m) => m.statut !== 'paye') : [];
+    const nb = Math.min(Math.max(c.nbMois || 1, 1), aRegler.length || 1);
+    const montant = mensuel && !c.libre
+      ? aRegler.slice(0, nb).reduce((s, m) => s + Number(m.reste_du), 0)
+      : Math.round(Number(c.montant)) || 0;
+    return { l, c, mensuel, aRegler, nb, montant };
+  });
+  const cochees = lignes.filter((x) => x.c.coche);
+  const total = cochees.reduce((s, x) => s + x.montant, 0);
 
   const soumettre = async (ev) => {
     ev.preventDefault();
     if (!eleve) return onErreur('Sélectionnez un élève');
-    if (!(montantFinal > 0)) return onErreur('Montant à encaisser invalide');
+    if (!cochees.length) return onErreur('Cochez au moins un frais à encaisser');
+    if (cochees.some((x) => !(x.montant > 0))) return onErreur('Chaque frais coché doit avoir un montant');
     setEnvoi(true);
     try {
       const cree = await post('/finances/paiements', {
         eleve_id: eleve.id,
-        frais_id: f.frais_id ? Number(f.frais_id) : null,
-        mode: f.mode,
-        reference: f.reference || null,
-        // Mois complets : le serveur calcule lui-meme le montant
-        ...(mensuel && !libre ? { nb_mois: nb } : { montant: montantSaisi }),
+        mode,
+        reference: reference || null,
+        elements: cochees.map((x) => (x.mensuel && !x.c.libre
+          // Mois complets : le serveur calcule lui-meme le montant
+          ? { frais_id: x.l.id, nb_mois: x.nb }
+          : { frais_id: x.l.id, montant: x.montant })),
       });
       onCree(cree);
     } catch (err) { onErreur(err.message); } finally { setEnvoi(false); }
   };
 
-  const maj = (c) => (e) => setF((v) => ({ ...v, [c]: e.target.value }));
-  const onglet = (actif) => `flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+  const onglet = (actif) => `flex-1 rounded-md px-2 py-1 text-xs font-medium transition ${
     actif
       ? 'bg-white dark:bg-slate-900 shadow-sm text-slate-900 dark:text-slate-100'
       : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
   }`;
 
   return (
-    <Modale ouverte={ouvert} onFermer={onFermer} titre="Encaisser un paiement" taille="sm">
+    <Modale ouverte={ouvert} onFermer={onFermer} titre="Encaisser un paiement" taille="md">
       <form onSubmit={soumettre} className="space-y-4">
         <div>
           <label className="etiquette">Élève *</label>
@@ -389,10 +380,11 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
               <span className="text-sm">
                 <strong>{eleve.prenom} {eleve.nom}</strong>
                 <span className="ml-2 font-mono text-xs text-slate-400">{eleve.matricule}</span>
+                {situation?.eleve?.classe && <span className="ml-2 text-xs text-slate-500">{situation.eleve.classe}</span>}
               </span>
               <button
                 type="button"
-                onClick={() => { setEleve(null); setSituation(null); setEcheancier([]); setRecherche(''); }}
+                onClick={() => { setEleve(null); setSituation(null); setEcheancier([]); setChoix({}); setRecherche(''); }}
                 className="text-xs text-marine-600 hover:underline"
               >
                 Changer
@@ -405,11 +397,8 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
                 <ul className="mt-1 max-h-40 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700">
                   {eleves.map((e) => (
                     <li key={e.id}>
-                      <button
-                        type="button"
-                        onClick={() => choisir(e)}
-                        className="w-full px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-slate-800"
-                      >
+                      <button type="button" onClick={() => choisir(e)}
+                              className="w-full px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-slate-800">
                         {e.prenom} {e.nom}
                         <span className="ml-2 font-mono text-xs text-slate-400">{e.matricule}</span>
                       </button>
@@ -421,119 +410,105 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
           )}
         </div>
 
-        {situation && situation.reste > 0 && (
-          <div className="flex items-center gap-2 rounded-lg bg-amber-50 dark:bg-amber-950/40 p-3 text-sm text-amber-700 dark:text-amber-300">
-            <AlertTriangle className="h-4 w-4 shrink-0" />
-            Reste à payer : <strong>{fcfa(situation.reste)}</strong>
-          </div>
-        )}
+        {eleve && !situation && <Chargement />}
 
-        <div>
-          <label className="etiquette">Type de frais</label>
-          <select className="champ" value={f.frais_id} onChange={choisirFrais}>
-            <option value="">Non précisé</option>
-            {frais.map((fr) => (
-              <option key={fr.id} value={fr.id}>
-                {fr.libelle} — {fcfa(fr.montant)}{fr.recurrent ? ' / mois' : ''}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Frais mensuel : mois complets ou avance libre */}
-        {mensuel && (
-          aRegler.length === 0 ? (
-            <p className="rounded-lg bg-emerald-50 dark:bg-emerald-950/40 p-3 text-sm text-emerald-700 dark:text-emerald-300">
-              Toutes les mensualités de l'année sont réglées.
+        {situation && (
+          situation.lignes.length === 0 ? (
+            <p className="rounded-lg bg-amber-50 dark:bg-amber-950/40 p-3 text-sm text-amber-700 dark:text-amber-300">
+              Aucun frais au barème pour la classe de cet élève. Renseignez le barème (Finances → Barème des frais),
+              {!situation.eleve?.classe && ' ou affectez d’abord l’élève à une classe,'} puis réessayez.
             </p>
           ) : (
-            <div className="space-y-3">
-              <div className="flex gap-1 rounded-lg bg-slate-100 dark:bg-slate-800 p-1" role="tablist">
-                <button type="button" role="tab" aria-selected={!libre} className={onglet(!libre)}
-                        onClick={() => setLibre(false)}>
-                  Mois complets
-                </button>
-                <button type="button" role="tab" aria-selected={libre} className={onglet(libre)}
-                        onClick={() => setLibre(true)}>
-                  Avance (montant libre)
-                </button>
-              </div>
+            <div>
+              <p className="etiquette">Frais à encaisser</p>
+              <ul className="divide-y divide-slate-100 dark:divide-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+                {lignes.map(({ l, c, mensuel, aRegler, nb, montant }) => (
+                  <li key={l.id} className="space-y-2 px-3 py-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="flex min-w-0 flex-1 items-center gap-2 text-sm">
+                        <input type="checkbox" checked={Boolean(c.coche)}
+                               onChange={(e) => maj(l.id, 'coche', e.target.checked)} />
+                        <span className="font-medium">{l.libelle}</span>
+                        {mensuel && <span className="text-xs text-slate-500">{fcfa(l.montant)} / mois</span>}
+                      </label>
+                      <span className={`text-xs ${Number(l.reste) > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                        {mensuel
+                          ? (aRegler.length ? `${aRegler.length} mois à régler` : 'Année réglée')
+                          : (Number(l.reste) > 0 ? `Reste ${fcfa(l.reste)}` : 'Réglé')}
+                      </span>
+                      {c.coche && !mensuel && (
+                        <input type="number" min="1" className="champ w-28 py-1 text-right tabular-nums"
+                               aria-label={`Montant — ${l.libelle}`}
+                               value={c.montant} onChange={(e) => maj(l.id, 'montant', e.target.value)} />
+                      )}
+                    </div>
 
-              {libre ? (
-                <div className="space-y-1.5">
-                  <label className="etiquette" htmlFor="montant-libre">Montant versé *</label>
-                  <input id="montant-libre" type="number" min="1" className="champ" required
-                         value={f.montant} onChange={maj('montant')} />
-                  {montantSaisi > resteAnnee ? (
-                    <p className="text-xs text-amber-600">
-                      Au-delà de {fcfa(resteAnnee)} (tout le reste de l'année), le surplus est noté
-                      comme avance non affectée à un mois.
-                    </p>
-                  ) : apercu.length > 0 && (
-                    <ul className="space-y-0.5 text-xs text-slate-500">
-                      {apercu.map((a) => (
-                        <li key={a.mois} className="flex justify-between">
-                          <span className="capitalize">{libelleMois(a.mois)}</span>
-                          <span className="tabular-nums">
-                            {a.part >= a.du
-                              ? `réglé (${fcfa(a.part)})`
-                              : `${fcfa(a.part)} sur ${fcfa(a.du)} — reste ${fcfa(a.du - a.part)}`}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              ) : (
-                <div>
-                  <label className="etiquette" htmlFor="nb-mois-caisse">Mois à régler</label>
-                  <select id="nb-mois-caisse" className="champ" value={nb}
-                          onChange={(e) => setNbMois(Number(e.target.value))}>
-                    {aRegler.map((m, i) => (
-                      <option key={m.mois} value={i + 1}>
-                        {i + 1} mois — jusqu'à {libelleMois(m.mois)} · {fcfa(
-                          aRegler.slice(0, i + 1).reduce((s, x) => s + Number(x.reste_du), 0)
+                    {c.coche && mensuel && aRegler.length > 0 && (
+                      <div className="space-y-2 pl-6">
+                        <div className="flex gap-1 rounded-lg bg-slate-100 dark:bg-slate-800 p-1" role="tablist">
+                          <button type="button" role="tab" aria-selected={!c.libre} className={onglet(!c.libre)}
+                                  onClick={() => maj(l.id, 'libre', false)}>Mois complets</button>
+                          <button type="button" role="tab" aria-selected={Boolean(c.libre)} className={onglet(c.libre)}
+                                  onClick={() => maj(l.id, 'libre', true)}>Avance (montant libre)</button>
+                        </div>
+                        {c.libre ? (
+                          <>
+                            <input type="number" min="1" className="champ py-1 tabular-nums"
+                                   aria-label={`Montant versé — ${l.libelle}`}
+                                   value={c.montant} onChange={(e) => maj(l.id, 'montant', e.target.value)} />
+                            <ul className="space-y-0.5 text-xs text-slate-500">
+                              {ventiler(aRegler, montant).map((a) => (
+                                <li key={a.mois} className="flex justify-between">
+                                  <span className="capitalize">{libelleMois(a.mois)}</span>
+                                  <span className="tabular-nums">
+                                    {a.part >= a.du ? `réglé (${fcfa(a.part)})`
+                                      : `${fcfa(a.part)} sur ${fcfa(a.du)} — reste ${fcfa(a.du - a.part)}`}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          </>
+                        ) : (
+                          <select className="champ py-1 text-sm" value={nb}
+                                  aria-label={`Mois à régler — ${l.libelle}`}
+                                  onChange={(e) => maj(l.id, 'nbMois', Number(e.target.value))}>
+                            {aRegler.map((m, i) => (
+                              <option key={m.mois} value={i + 1}>
+                                {i + 1} mois — jusqu'à {libelleMois(m.mois)} · {fcfa(
+                                  aRegler.slice(0, i + 1).reduce((s, x) => s + Number(x.reste_du), 0))}
+                              </option>
+                            ))}
+                          </select>
                         )}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="mt-1 text-xs text-slate-500">
-                    De {libelleMois(aRegler[0].mois)} à {libelleMois(aRegler[nb - 1].mois)} : {fcfa(totalMois)}
-                  </p>
-                </div>
-              )}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
             </div>
           )
         )}
 
         <div className="grid grid-cols-2 gap-3">
-          {!mensuel && (
-            <div>
-              <label className="etiquette">Montant *</label>
-              <input type="number" min="1" className="champ" value={f.montant} onChange={maj('montant')} required />
-            </div>
-          )}
           <div>
             <label className="etiquette">Mode</label>
-            <select className="champ" value={f.mode} onChange={maj('mode')}>
+            <select className="champ" value={mode} onChange={(e) => setMode(e.target.value)}>
               {Object.entries(MODES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
           </div>
-          <div className={mensuel ? '' : 'col-span-2'}>
+          <div>
             <label className="etiquette">Référence</label>
-            <input className="champ" value={f.reference} onChange={maj('reference')} placeholder="N° transaction" />
+            <input className="champ" value={reference} onChange={(e) => setReference(e.target.value)}
+                   placeholder="N° transaction" />
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 pt-2">
-          {montantFinal > 0 && (
-            <span className="mr-auto text-sm text-slate-500">
-              Total : <strong className="tabular-nums text-slate-800 dark:text-slate-200">{fcfa(montantFinal)}</strong>
-            </span>
-          )}
+        <div className="flex items-center justify-end gap-2 border-t border-slate-200 dark:border-slate-800 pt-3">
+          <span className="mr-auto text-sm text-slate-500">
+            Total : <strong className="text-base tabular-nums text-slate-800 dark:text-slate-200">{fcfa(total)}</strong>
+          </span>
           <button type="button" onClick={onFermer} className="bouton-secondaire">Annuler</button>
-          <button type="submit" className="bouton-primaire"
-                  disabled={envoi || (mensuel && aRegler.length === 0 && !libre)}>
+          <button type="submit" className="bouton-primaire" disabled={envoi || !cochees.length}>
             {envoi ? 'Enregistrement…' : 'Encaisser'}
           </button>
         </div>
@@ -952,6 +927,255 @@ function Depenses() {
   );
 }
 
+const NOMS_MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet',
+  'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+
+const CYCLES = [
+  ['elementaire', 'Cycle élémentaire'],
+  ['moyen', 'Moyen'],
+  ['secondaire', 'Secondaire'],
+];
+
+/**
+ * Montants de la fiche de renseignements 2026-2027 de l etablissement,
+ * par niveau. Proposes en un clic pour eviter la saisie ; la caisse les
+ * verifie avant d enregistrer.
+ */
+const FICHE_2026 = [
+  { libelle: 'Inscription', recurrent: false, montants: {
+    CI: 21000, CP: 21000, CE1: 22000, CE2: 23000, CM1: 23000, CM2: 23000,
+    '6eme': 29000, '5eme': 29000, '4eme': 30000, '3eme': 30000 } },
+  { libelle: "Droit d'inscription", recurrent: false, montants: {
+    CI: 5000, CP: 5000, CE1: 5000, CE2: 5000, CM1: 5000, CM2: 5000,
+    '6eme': 5000, '5eme': 5000, '4eme': 5000, '3eme': 5000 } },
+  { libelle: 'Blouse', recurrent: false, montants: {
+    CI: 5000, CP: 5000, CE1: 5000, CE2: 5000, CM1: 5000, CM2: 5000 } },
+  { libelle: 'Assurance', recurrent: false, montants: {
+    CI: 1000, CP: 1000, CE1: 1000, CE2: 1000, CM1: 1000, CM2: 1000 } },
+  { libelle: 'Uniforme', recurrent: false, montants: {
+    '6eme': 10000, '5eme': 10000, '4eme': 10000, '3eme': 10000 } },
+  { libelle: 'Fosco', recurrent: false, montants: {
+    '6eme': 1000, '5eme': 1000, '4eme': 1000, '3eme': 1000 } },
+  { libelle: 'Visite médicale', recurrent: false, montants: {
+    '6eme': 500, '5eme': 500, '4eme': 500, '3eme': 500 } },
+  { libelle: 'Mensualité', recurrent: true, mois_fin: 6, montants: {
+    CI: 10000, CP: 10000, CE1: 11000, CE2: 11000, CM1: 12000, CM2: 12000,
+    '6eme': 12500, '5eme': 12500, '4eme': 13500, '3eme': 13500 } },
+];
+
+/**
+ * Bareme par classe : une ligne par niveau, une colonne par frais. Une
+ * case vide signifie que le frais ne concerne pas ce niveau.
+ */
+function GrilleBareme() {
+  const { Toast, succes, erreur } = useToast();
+  const [bareme, setBareme] = useState(null);
+  const [colonnes, setColonnes] = useState([]);
+  const [modifie, setModifie] = useState(false);
+  const [envoi, setEnvoi] = useState(false);
+  const [avertissements, setAvertissements] = useState([]);
+
+  /** Colonnes du serveur -> etat editable : montants en texte par niveau. */
+  const editer = (b) => {
+    setBareme(b);
+    setColonnes(b.colonnes.map((c) => ({
+      libelle: c.libelle, recurrent: c.recurrent, obligatoire: c.obligatoire,
+      mois_fin: c.mois_fin || '',
+      montants: Object.fromEntries(Object.entries(c.montants).map(([n, v]) => [n, String(v.montant)])),
+      // Libelle d origine : sert a vider l ancienne colonne si on la renomme
+      origine: c.libelle,
+    })));
+    setModifie(false);
+  };
+
+  useEffect(() => {
+    get('/finances/bareme').then(editer).catch((e) => erreur(e.message));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (!bareme) return <Chargement />;
+
+  const changer = (i, champ, valeur) => {
+    setColonnes((cs) => cs.map((c, j) => (j === i ? { ...c, [champ]: valeur } : c)));
+    setModifie(true);
+  };
+  const changerMontant = (i, niveauId, valeur) => {
+    setColonnes((cs) => cs.map((c, j) => (j === i
+      ? { ...c, montants: { ...c.montants, [niveauId]: valeur } } : c)));
+    setModifie(true);
+  };
+  const ajouterColonne = () => {
+    setColonnes((cs) => [...cs, { libelle: '', recurrent: false, obligatoire: true, mois_fin: '', montants: {} }]);
+    setModifie(true);
+  };
+  const retirerColonne = (i) => {
+    if (!window.confirm('Retirer ce frais de tous les niveaux ?')) return;
+    setColonnes((cs) => cs.map((c, j) => (j === i ? { ...c, retiree: true } : c)));
+    setModifie(true);
+  };
+
+  const preremplir = () => {
+    if (colonnes.some((c) => !c.retiree && Object.values(c.montants).some((v) => v !== ''))
+        && !window.confirm('Remplacer les montants affichés par ceux de la fiche 2026-2027 ?')) return;
+    const parLibelle = (l) => bareme.niveaux.find((n) => n.libelle === l)?.id;
+    const nouvelles = FICHE_2026.map((m) => ({
+      libelle: m.libelle, recurrent: m.recurrent, obligatoire: true, mois_fin: m.mois_fin || '',
+      montants: Object.fromEntries(Object.entries(m.montants)
+        .map(([l, v]) => [parLibelle(l), String(v)]).filter(([id]) => id)),
+    }));
+    // Les colonnes existantes d un autre nom sont gardees ; celles du meme nom sont remplacees
+    setColonnes((cs) => [
+      ...cs.filter((c) => !nouvelles.some((n) => n.libelle.toLowerCase() === c.libelle.toLowerCase())),
+      ...nouvelles.map((n) => ({ ...n, origine: cs.find((c) => c.libelle.toLowerCase() === n.libelle.toLowerCase())?.origine })),
+    ]);
+    setModifie(true);
+  };
+
+  const enregistrer = async () => {
+    setEnvoi(true);
+    setAvertissements([]);
+    try {
+      const envoyees = [];
+      for (const c of colonnes) {
+        const montants = {};
+        for (const n of bareme.niveaux) {
+          const v = c.retiree ? '' : (c.montants[n.id] ?? '');
+          montants[n.id] = v === '' ? null : Number(v);
+        }
+        if (!c.retiree && c.libelle.trim()) {
+          envoyees.push({ libelle: c.libelle.trim(), recurrent: c.recurrent, obligatoire: c.obligatoire,
+            mois_fin: c.recurrent && c.mois_fin ? Number(c.mois_fin) : null, montants });
+        }
+        // Colonne renommee ou retiree : on vide l ancienne
+        if (c.origine && (c.retiree || c.origine.toLowerCase() !== c.libelle.trim().toLowerCase())) {
+          envoyees.push({ libelle: c.origine, recurrent: c.recurrent, obligatoire: c.obligatoire,
+            montants: Object.fromEntries(bareme.niveaux.map((n) => [n.id, null])) });
+        }
+      }
+      const r = await put('/finances/bareme', { colonnes: envoyees });
+      editer(r);
+      setAvertissements(r.avertissements || []);
+      succes('Barème enregistré');
+    } catch (e) {
+      erreur(e.message);
+    } finally {
+      setEnvoi(false);
+    }
+  };
+
+  const visibles = colonnes.map((c, i) => ({ ...c, i })).filter((c) => !c.retiree);
+
+  return (
+    <div className="carte space-y-3 p-4">
+      <Toast />
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="mr-auto">
+          <h3 className="font-semibold">Barème par classe — {bareme.annee.libelle}</h3>
+          <p className="text-xs text-slate-500">
+            Une case vide : le frais ne concerne pas ce niveau. Chaque élève ne doit que les frais de son niveau.
+          </p>
+        </div>
+        <button type="button" className="bouton-secondaire" onClick={preremplir}>
+          Pré-remplir avec la fiche 2026-2027
+        </button>
+        <button type="button" className="bouton-secondaire" onClick={ajouterColonne}>
+          <Plus className="h-4 w-4" /> Colonne
+        </button>
+        <button type="button" className="bouton-primaire" disabled={!modifie || envoi} onClick={enregistrer}>
+          {envoi ? 'Enregistrement…' : 'Enregistrer'}
+        </button>
+      </div>
+
+      {avertissements.length > 0 && (
+        <ul className="rounded-lg bg-amber-50 dark:bg-amber-950/40 p-3 text-sm text-amber-700 dark:text-amber-300">
+          {avertissements.map((a, i) => <li key={i}>{a}</li>)}
+        </ul>
+      )}
+
+      {visibles.length === 0 ? (
+        <Vide titre="Aucun frais par classe"
+              texte="Cliquez sur « Pré-remplir avec la fiche 2026-2027 » ou ajoutez une colonne." />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="align-top">
+                <th className="sticky left-0 bg-white dark:bg-slate-900 px-2 py-2 text-left">Classe</th>
+                {visibles.map((c) => (
+                  <th key={c.i} className="min-w-[10.5rem] px-1.5 py-2 text-left font-normal">
+                    <div className="flex items-center gap-1">
+                      <input className="champ py-1 text-sm font-semibold" value={c.libelle} placeholder="Libellé"
+                             title={c.libelle}
+                             aria-label="Libellé du frais" onChange={(e) => changer(c.i, 'libelle', e.target.value)} />
+                      <button type="button" onClick={() => retirerColonne(c.i)} aria-label="Retirer la colonne"
+                              className="rounded p-1 text-slate-400 hover:text-red-600">
+                        <Ban className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <label className="mt-1 flex items-center gap-1 text-xs text-slate-500">
+                      <input type="checkbox" checked={c.recurrent}
+                             onChange={(e) => changer(c.i, 'recurrent', e.target.checked)} />
+                      Mensuel
+                    </label>
+                    {c.recurrent && (
+                      <select className="champ mt-1 py-0.5 text-xs" value={c.mois_fin}
+                              aria-label="Dernier mois dû"
+                              onChange={(e) => changer(c.i, 'mois_fin', e.target.value)}>
+                        <option value="">jusqu'à la fin de l'année</option>
+                        {NOMS_MOIS.map((m, k) => <option key={m} value={k + 1}>jusqu'à {m}</option>)}
+                      </select>
+                    )}
+                    <label className="mt-1 flex items-center gap-1 text-xs text-slate-500">
+                      <input type="checkbox" checked={c.obligatoire}
+                             onChange={(e) => changer(c.i, 'obligatoire', e.target.checked)} />
+                      Obligatoire
+                    </label>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {CYCLES.map(([cycle, titre]) => {
+                const niveaux = bareme.niveaux.filter((n) => n.cycle === cycle);
+                if (!niveaux.length) return null;
+                return [
+                  <tr key={cycle}>
+                    <td colSpan={visibles.length + 1}
+                        className="bg-slate-50 dark:bg-slate-800/50 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      {titre}
+                    </td>
+                  </tr>,
+                  ...niveaux.map((n) => (
+                    <tr key={n.id} className="border-b border-slate-100 dark:border-slate-800">
+                      <td className="sticky left-0 bg-white dark:bg-slate-900 px-2 py-1 font-medium">{n.libelle}</td>
+                      {visibles.map((c) => (
+                        <td key={c.i} className="px-1.5 py-1">
+                          <input type="number" min="0" inputMode="numeric"
+                                 className="champ py-1 text-right tabular-nums"
+                                 aria-label={`${c.libelle || 'Frais'} — ${n.libelle}`}
+                                 value={c.montants[n.id] ?? ''}
+                                 onChange={(e) => changerMontant(c.i, n.id, e.target.value)} />
+                        </td>
+                      ))}
+                    </tr>
+                  )),
+                ];
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {bareme.globaux.length > 0 && (
+        <p className="text-xs text-slate-500">
+          Frais valables pour tous les niveaux (liste ci-dessous) :{' '}
+          {bareme.globaux.map((g) => g.libelle).join(', ')}. Ils s'ajoutent à ceux de la grille.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function Frais() {
   const { Toast, succes, erreur: toastErreur } = useToast();
   const [liste, setListe] = useState(null);
@@ -985,9 +1209,11 @@ function Frais() {
   return (
     <div className="space-y-4">
       <Toast />
-      <div className="flex justify-end">
-        <button onClick={() => setOuvert(true)} className="bouton-primaire">
-          <Plus className="h-4 w-4" /> Nouveau frais
+      <GrilleBareme />
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-slate-500">Tous les frais de l'année</h3>
+        <button onClick={() => setOuvert(true)} className="bouton-secondaire">
+          <Plus className="h-4 w-4" /> Frais pour tous les niveaux
         </button>
       </div>
 
@@ -1012,7 +1238,9 @@ function Frais() {
                     <td className="text-right font-semibold tabular-nums">{fcfa(fr.montant)}</td>
                     <td className="text-center">
                       <Puce ton={fr.recurrent ? 'info' : 'neutre'}>
-                        {fr.recurrent ? 'Mensuel' : 'Unique'}
+                        {fr.recurrent
+                          ? (fr.mois_fin ? `Mensuel, jusqu'à ${NOMS_MOIS[fr.mois_fin - 1]}` : 'Mensuel')
+                          : 'Unique'}
                       </Puce>
                     </td>
                     <td className="hidden md:table-cell text-center">

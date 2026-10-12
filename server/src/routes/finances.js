@@ -5,7 +5,7 @@ import { verifierEleveTuteur, estTuteur, eleveSuivi } from '../middleware/portee
 import { prochainNumeroRecu } from '../db/recus.js';
 import { montantEnLettres } from '../metier/montant-lettres.js';
 import {
-  moisDeLAnnee, etatDesMois, montantPourMois, repartirVersement,
+  moisDeLAnnee, moisDuFrais, nbMoisExigibles, etatDesMois, montantPourMois, repartirVersement,
 } from '../metier/mensualites.js';
 
 const router = Router();
@@ -28,7 +28,7 @@ router.get('/frais', async (req, res, next) => {
 
 router.post('/frais', autoriser(...CAISSE), async (req, res, next) => {
   try {
-    const { niveau_id, libelle, montant, obligatoire, echeance, recurrent } = req.body;
+    const { niveau_id, libelle, montant, obligatoire, echeance, recurrent, mois_fin } = req.body;
     if (!libelle || montant == null) {
       return res.status(400).json({ erreur: 'Libelle et montant requis' });
     }
@@ -36,12 +36,150 @@ router.post('/frais', autoriser(...CAISSE), async (req, res, next) => {
     if (!ar[0]) return res.status(400).json({ erreur: 'Aucune annee scolaire active' });
 
     const { rows } = await query(
-      `INSERT INTO frais (annee_id, niveau_id, libelle, montant, obligatoire, echeance, recurrent)
-       VALUES ($1,$2,$3,$4,COALESCE($5,true),$6,COALESCE($7,false)) RETURNING *`,
-      [ar[0].id, niveau_id || null, libelle, montant, obligatoire, echeance || null, recurrent]
+      `INSERT INTO frais (annee_id, niveau_id, libelle, montant, obligatoire, echeance, recurrent, mois_fin)
+       VALUES ($1,$2,$3,$4,COALESCE($5,true),$6,COALESCE($7,false),$8) RETURNING *`,
+      [ar[0].id, niveau_id || null, libelle, montant, obligatoire, echeance || null, recurrent,
+       recurrent && mois_fin ? Number(mois_fin) : null]
     );
     await tracer(req, 'creation', 'frais', rows[0].id);
     res.status(201).json(rows[0]);
+  } catch (err) { next(err); }
+});
+
+/**
+ * Bareme par classe : une grille niveaux x frais, comme la fiche de
+ * renseignements de l etablissement (inscription, droit d inscription,
+ * blouse, assurance, mensualite...). Une « colonne » regroupe les frais de
+ * meme libelle ; chaque case est le montant pour un niveau (vide = ce frais
+ * ne concerne pas ce niveau).
+ */
+/**
+ * Cle de comparaison d un libelle de frais : sans accents, casse ni
+ * ponctuation. « Mensualité » et « Mensualite » sont le meme frais.
+ */
+const cleFrais = (libelle) => String(libelle || '').normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+async function lireBareme() {
+  const { rows: an } = await query(`SELECT id, libelle FROM annee_scolaire WHERE active LIMIT 1`);
+  if (!an[0]) return null;
+  const { rows: niveaux } = await query(
+    `SELECT id, libelle, cycle, entite, ordre FROM niveau ORDER BY ordre, libelle`
+  );
+  const { rows: frais } = await query(
+    `SELECT f.*, (SELECT COUNT(*)::int FROM paiement p WHERE p.frais_id = f.id) AS paiements
+     FROM frais f WHERE f.annee_id = $1 ORDER BY f.id`,
+    [an[0].id]
+  );
+  const colonnes = [];
+  for (const f of frais.filter((x) => x.niveau_id)) {
+    let col = colonnes.find((c) => c.libelle.toLowerCase() === f.libelle.toLowerCase());
+    if (!col) {
+      col = { libelle: f.libelle, recurrent: f.recurrent, obligatoire: f.obligatoire, mois_fin: f.mois_fin, montants: {} };
+      colonnes.push(col);
+    }
+    col.montants[f.niveau_id] = { id: f.id, montant: Number(f.montant), paiements: f.paiements };
+  }
+  return {
+    annee: an[0],
+    niveaux,
+    colonnes,
+    // Frais valables pour tous les niveaux, hors grille
+    globaux: frais.filter((x) => !x.niveau_id).map((x) => ({ ...x, montant: Number(x.montant) })),
+  };
+}
+
+router.get('/bareme', autoriser(...CAISSE), async (req, res, next) => {
+  try {
+    const bareme = await lireBareme();
+    if (!bareme) return res.status(400).json({ erreur: 'Aucune annee scolaire active' });
+    res.json(bareme);
+  } catch (err) { next(err); }
+});
+
+/**
+ * Enregistre la grille. Pour chaque colonne et chaque niveau : montant
+ * saisi -> frais cree ou mis a jour ; case videe -> frais supprime, SAUF
+ * s il porte deja des paiements (il est alors conserve et signale).
+ */
+router.put('/bareme', autoriser(...CAISSE), async (req, res, next) => {
+  try {
+    const colonnes = Array.isArray(req.body.colonnes) ? req.body.colonnes : [];
+    const { rows: an } = await query(`SELECT id FROM annee_scolaire WHERE active LIMIT 1`);
+    if (!an[0]) return res.status(400).json({ erreur: 'Aucune annee scolaire active' });
+
+    const vus = new Set();
+    for (const c of colonnes) {
+      const libelle = String(c.libelle || '').trim();
+      if (!libelle) return res.status(400).json({ erreur: 'Chaque colonne doit avoir un libelle' });
+      if (vus.has(cleFrais(libelle))) {
+        return res.status(400).json({ erreur: `Le frais « ${libelle} » figure deux fois` });
+      }
+      vus.add(cleFrais(libelle));
+      if (c.recurrent && c.mois_fin != null && c.mois_fin !== ''
+          && !(Number(c.mois_fin) >= 1 && Number(c.mois_fin) <= 12)) {
+        return res.status(400).json({ erreur: 'Dernier mois du invalide' });
+      }
+      for (const v of Object.values(c.montants || {})) {
+        if (v !== null && v !== '' && !(Number(v) >= 0)) {
+          return res.status(400).json({ erreur: `Montant invalide pour « ${libelle} »` });
+        }
+      }
+    }
+
+    // Un frais « pour tous les niveaux » du meme nom s ajouterait a celui du
+    // niveau : l eleve le paierait deux fois
+    const { rows: globaux } = await query(
+      `SELECT libelle FROM frais WHERE annee_id = $1 AND niveau_id IS NULL`, [an[0].id]
+    );
+    const conflit = globaux.find((g) => vus.has(cleFrais(g.libelle)));
+    if (conflit) {
+      return res.status(409).json({
+        erreur: `« ${conflit.libelle} » existe deja pour tous les niveaux : il serait compte deux fois. `
+          + 'Renommez la colonne ou supprimez ce frais general.',
+      });
+    }
+
+    const avertissements = [];
+    await transaction(async (client) => {
+      for (const c of colonnes) {
+        const libelle = String(c.libelle).trim();
+        const recurrent = Boolean(c.recurrent);
+        const moisFin = recurrent && c.mois_fin ? Number(c.mois_fin) : null;
+        const obligatoire = c.obligatoire !== false;
+        for (const [niveauId, valeur] of Object.entries(c.montants || {})) {
+          const { rows: ex } = await client.query(
+            `SELECT f.id, (SELECT COUNT(*)::int FROM paiement p WHERE p.frais_id = f.id) AS paiements
+             FROM frais f WHERE f.annee_id = $1 AND f.niveau_id = $2 AND lower(f.libelle) = lower($3)`,
+            [an[0].id, Number(niveauId), libelle]
+          );
+          const vide = valeur === null || valeur === '';
+          if (vide) {
+            if (!ex[0]) continue;
+            if (ex[0].paiements > 0) {
+              avertissements.push(`« ${libelle} » conserve pour un niveau : des paiements y sont rattaches`);
+              continue;
+            }
+            await client.query(`DELETE FROM frais WHERE id = $1`, [ex[0].id]);
+          } else if (ex[0]) {
+            await client.query(
+              `UPDATE frais SET libelle = $2, montant = $3, recurrent = $4, obligatoire = $5, mois_fin = $6
+               WHERE id = $1`,
+              [ex[0].id, libelle, Number(valeur), recurrent, obligatoire, moisFin]
+            );
+          } else {
+            await client.query(
+              `INSERT INTO frais (annee_id, niveau_id, libelle, montant, recurrent, obligatoire, mois_fin)
+               VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+              [an[0].id, Number(niveauId), libelle, Number(valeur), recurrent, obligatoire, moisFin]
+            );
+          }
+        }
+      }
+    });
+
+    await tracer(req, 'modification_bareme', 'frais', null, { colonnes: colonnes.length });
+    res.json({ ...(await lireBareme()), avertissements });
   } catch (err) { next(err); }
 });
 
@@ -86,7 +224,7 @@ router.get('/paiements', autoriser(...CAISSE, 'censeur'), async (req, res, next)
  */
 async function echeancier(eleveId, fraisId, db = { query }) {
   const { rows } = await db.query(
-    `SELECT f.id, f.libelle, f.montant, f.recurrent, a.date_debut, a.date_fin,
+    `SELECT f.id, f.libelle, f.montant, f.recurrent, f.mois_fin, a.date_debut, a.date_fin,
             COALESCE((SELECT SUM(p.montant) FROM paiement p
                       WHERE p.eleve_id = $1 AND p.frais_id = f.id
                         AND p.annee_id = f.annee_id AND NOT p.annule), 0) AS paye
@@ -96,7 +234,8 @@ async function echeancier(eleveId, fraisId, db = { query }) {
   );
   if (!rows[0]) return null;
   const f = rows[0];
-  const mois = moisDeLAnnee(f.date_debut, f.date_fin);
+  // « D octobre a juin » : les mois apres le dernier mois du ne sont pas dus
+  const mois = moisDuFrais(moisDeLAnnee(f.date_debut, f.date_fin), f.mois_fin);
   return {
     id: f.id, libelle: f.libelle, montant: Number(f.montant), recurrent: f.recurrent,
     paye: Number(f.paye), mois, etat: etatDesMois(mois, f.montant, f.paye),
@@ -128,70 +267,98 @@ router.get('/echeancier/:eleveId', autoriser(...CAISSE), async (req, res, next) 
 /**
  * Encaissement au guichet.
  *
- * Frais ponctuel (inscription, tenue...) : une ecriture, comme avant.
- * Frais MENSUEL : le versement est ventile mois par mois, dans l ordre,
- * a partir de ce qui est deja paye — une ecriture et un numero de recu par
- * mois couvert, regroupees en un lot (un seul recu imprime). Deux facons :
- *   - `nb_mois` : solder N mois complets, montant calcule par le serveur ;
- *   - `montant` libre : avance partielle ou de plusieurs mois, le dernier
- *     mois pouvant rester partiel.
+ * Un encaissement peut regrouper plusieurs frais — a l inscription :
+ * inscription, droit d inscription, blouse, assurance et premier mois — et
+ * donne UN recu. `elements` : [{ frais_id, montant | nb_mois }]. L ancienne
+ * forme (frais_id, montant, nb_mois a la racine) reste acceptee.
+ *
+ * Frais ponctuel : une ecriture. Frais MENSUEL : le versement est ventile
+ * mois par mois, dans l ordre, a partir de ce qui est deja paye, soit en
+ * `nb_mois` complets (montant calcule par le serveur), soit en `montant`
+ * libre (avance, le dernier mois pouvant rester partiel). Toutes les
+ * ecritures forment un lot : un seul recu, une seule annulation.
  */
 router.post('/paiements', autoriser(...CAISSE), async (req, res, next) => {
   try {
-    const { eleve_id, frais_id, mode, reference, mois_couvert, date_paiement } = req.body;
+    const { eleve_id, mode, reference, date_paiement } = req.body;
     if (!eleve_id) return res.status(400).json({ erreur: 'Eleve requis' });
     const { rows: ar } = await query(`SELECT id FROM annee_scolaire WHERE active LIMIT 1`);
     if (!ar[0]) return res.status(400).json({ erreur: 'Aucune annee scolaire active' });
 
-    const ech = frais_id ? await echeancier(Number(eleve_id), Number(frais_id)) : null;
-    const mensuel = Boolean(ech?.recurrent);
+    const elements = Array.isArray(req.body.elements) && req.body.elements.length
+      ? req.body.elements
+      : [{
+          frais_id: req.body.frais_id, montant: req.body.montant,
+          nb_mois: req.body.nb_mois, mois_couvert: req.body.mois_couvert,
+        }];
 
-    let montant = Number(req.body.montant);
-    if (mensuel && req.body.nb_mois != null && req.body.nb_mois !== '') {
-      const nb = Number(req.body.nb_mois);
-      montant = Number.isInteger(nb) ? montantPourMois(ech.etat, nb) : null;
-      if (montant == null) return res.status(400).json({ erreur: 'Il ne reste pas autant de mois a regler' });
+    // Tout est verifie avant la moindre ecriture
+    const prepares = [];
+    for (const el of elements) {
+      const fraisId = el.frais_id ? Number(el.frais_id) : null;
+      if (fraisId && prepares.some((p) => p.fraisId === fraisId)) {
+        return res.status(400).json({ erreur: 'Un meme frais figure deux fois dans l encaissement' });
+      }
+      const ech = fraisId ? await echeancier(Number(eleve_id), fraisId) : null;
+      if (fraisId && !ech) return res.status(400).json({ erreur: 'Frais introuvable pour l annee en cours' });
+      const mensuel = Boolean(ech?.recurrent);
+
+      let montant = Number(el.montant);
+      if (mensuel && el.nb_mois != null && el.nb_mois !== '') {
+        const nb = Number(el.nb_mois);
+        montant = Number.isInteger(nb) ? montantPourMois(ech.etat, nb) : null;
+        if (montant == null) {
+          return res.status(400).json({ erreur: `${ech.libelle} : il ne reste pas autant de mois a regler` });
+        }
+      }
+      if (!(montant > 0)) return res.status(400).json({ erreur: 'Eleve et montant positif requis' });
+      prepares.push({ fraisId, libelle: ech?.libelle || null, mensuel, montant, mois: el.mois_couvert || null });
     }
-    if (!(montant > 0)) return res.status(400).json({ erreur: 'Eleve et montant positif requis' });
 
     const lignes = await transaction(async (client) => {
-      // Releve l echeancier dans la transaction : un encaissement concurrent
-      // ne doit pas faire couvrir deux fois le meme mois
-      const etat = mensuel ? await echeancier(Number(eleve_id), Number(frais_id), client) : null;
-      const ventilation = mensuel
-        ? repartirVersement(etat.mois, etat.montant, etat.paye, montant)
-        : [{ mois: mois_couvert || null, montant }];
-
       const creees = [];
-      for (const v of ventilation) {
-        // Numero de recu sequentiel, commun au guichet et au paiement Wave
-        const numero = await prochainNumeroRecu(client);
-        const { rows } = await client.query(
-          `INSERT INTO paiement (eleve_id, frais_id, annee_id, montant, mode, reference,
-                                 numero_recu, mois_couvert, date_paiement, encaisse_par)
-           VALUES ($1,$2,$3,$4,COALESCE($5,'especes'),$6,$7,$8,COALESCE($9,CURRENT_DATE),$10)
-           RETURNING *`,
-          [eleve_id, frais_id || null, ar[0].id, v.montant, mode, reference || null,
-           numero, v.mois, date_paiement || null, req.user.id]
-        );
-        creees.push(rows[0]);
+      for (const p of prepares) {
+        // Echeancier releve dans la transaction : un encaissement concurrent
+        // ne doit pas faire couvrir deux fois le meme mois
+        const etat = p.mensuel ? await echeancier(Number(eleve_id), p.fraisId, client) : null;
+        const ventilation = p.mensuel
+          ? repartirVersement(etat.mois, etat.montant, etat.paye, p.montant)
+          : [{ mois: p.mois, montant: p.montant }];
+
+        for (const v of ventilation) {
+          // Numero de recu sequentiel, commun au guichet et au paiement Wave
+          const numero = await prochainNumeroRecu(client);
+          const { rows } = await client.query(
+            `INSERT INTO paiement (eleve_id, frais_id, annee_id, montant, mode, reference,
+                                   numero_recu, mois_couvert, date_paiement, encaisse_par)
+             VALUES ($1,$2,$3,$4,COALESCE($5,'especes'),$6,$7,$8,COALESCE($9,CURRENT_DATE),$10)
+             RETURNING *`,
+            [eleve_id, p.fraisId, ar[0].id, v.montant, mode, reference || null,
+             numero, v.mois, date_paiement || null, req.user.id]
+          );
+          creees.push({ ...rows[0], frais: p.libelle });
+        }
       }
-      // Plusieurs mois : un lot, donc un seul recu et une seule annulation
+      // Plusieurs ecritures : un lot, donc un seul recu et une seule annulation
       if (creees.length > 1) {
         await client.query(`UPDATE paiement SET lot = $1 WHERE id = ANY($2)`,
-          [creees[0].id, creees.map((p) => p.id)]);
+          [creees[0].id, creees.map((x) => x.id)]);
       }
       return creees;
     });
 
+    const total = prepares.reduce((s, p) => s + p.montant, 0);
     await tracer(req, 'encaissement', 'paiement', lignes[0].id, {
-      montant, mois: lignes.map((l) => l.mois_couvert).filter(Boolean),
+      montant: total, ecritures: lignes.length,
     });
-    // La premiere ecriture ouvre le recu ; le montant est celui du lot
+    // La premiere ecriture ouvre le recu ; le montant est celui de l encaissement
+    const { frais: _f, ...premiere } = lignes[0];
     res.status(201).json({
-      ...lignes[0],
-      montant,
-      lignes: lignes.map((l) => ({ numero_recu: l.numero_recu, mois: l.mois_couvert, montant: Number(l.montant) })),
+      ...premiere,
+      montant: total,
+      lignes: lignes.map((l) => ({
+        numero_recu: l.numero_recu, frais: l.frais, mois: l.mois_couvert, montant: Number(l.montant),
+      })),
     });
   } catch (err) { next(err); }
 });
@@ -249,10 +416,11 @@ router.get('/situation/:eleveId', async (req, res, next) => {
       [req.params.eleveId, info[0].niveau_id]
     );
 
-    const mois = await moisExigibles();
+    const exigibles = await exigiblesParFrais();
     const lignes = frais.map((f) => {
-      // Un frais recurrent est du pour chaque mois ecoule depuis la rentree
-      const du = f.recurrent ? Number(f.montant) * mois : Number(f.montant);
+      // Un frais mensuel est du pour chaque mois deja commence, jusqu a son
+      // dernier mois (juin pour « octobre a juin »)
+      const du = f.recurrent ? Number(f.montant) * (exigibles[f.id] ?? 0) : Number(f.montant);
       return { ...f, du, reste: Math.max(du - Number(f.paye), 0) };
     });
 
@@ -271,28 +439,21 @@ router.get('/situation/:eleveId', async (req, res, next) => {
 });
 
 /**
- * Nombre de mensualites exigibles a ce jour pour une annee scolaire.
- * Compte les mois ecoules depuis la rentree, borne au nombre total de mois
- * de l annee : apres la fin de l annee, la totalite est due, jamais plus.
+ * Nombre de mensualites exigibles a ce jour, frais mensuel par frais
+ * mensuel de l annee active : { [frais_id]: nombre }. Chaque frais s arrete
+ * a son dernier mois du ; apres celui-ci, la totalite est due, jamais plus.
  */
-function mensualitesDues(debut, fin) {
-  if (!debut || !fin) return 1;
-  const d = new Date(debut), f = new Date(fin);
-  const now = new Date();
-  const moisEntre = (a, b) =>
-    (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth()) + 1;
-  const total = Math.max(moisEntre(d, f), 1);
-  if (now < d) return 0;
-  return Math.min(Math.max(moisEntre(d, now), 1), total);
-}
-
-/** Charge l annee active et calcule le nombre de mensualites exigibles. */
-async function moisExigibles() {
+async function exigiblesParFrais(maintenant = new Date()) {
   const { rows } = await query(
-    `SELECT date_debut, date_fin FROM annee_scolaire WHERE active LIMIT 1`
+    `SELECT f.id, f.mois_fin, a.date_debut, a.date_fin
+     FROM frais f JOIN annee_scolaire a ON a.id = f.annee_id
+     WHERE a.active AND f.recurrent`
   );
-  if (!rows[0]) return 1;
-  return mensualitesDues(rows[0].date_debut, rows[0].date_fin);
+  const resultat = {};
+  for (const f of rows) {
+    resultat[f.id] = nbMoisExigibles(moisDuFrais(moisDeLAnnee(f.date_debut, f.date_fin), f.mois_fin), maintenant);
+  }
+  return resultat;
 }
 
 // Liste des impayes
@@ -301,7 +462,9 @@ router.get('/impayes', autoriser(...CAISSE, 'censeur'), async (req, res, next) =
     const { rows } = await query(
       `WITH du_par_eleve AS (
          SELECT e.id AS eleve_id,
-                SUM(CASE WHEN f.recurrent THEN f.montant * $1 ELSE f.montant END) AS total_du
+                SUM(CASE WHEN f.recurrent
+                         THEN f.montant * COALESCE(($1::jsonb ->> f.id::text)::int, 0)
+                         ELSE f.montant END) AS total_du
          FROM eleve e
          JOIN inscription i ON i.eleve_id = e.id
            AND i.annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)
@@ -328,7 +491,7 @@ router.get('/impayes', autoriser(...CAISSE, 'censeur'), async (req, res, next) =
        GROUP BY e.id, e.matricule, e.prenom, e.nom, c.libelle, d.total_du
        HAVING d.total_du - COALESCE(SUM(p.montant) FILTER (WHERE NOT p.annule), 0) > 0
        ORDER BY reste DESC`,
-      [await moisExigibles()]
+      [JSON.stringify(await exigiblesParFrais())]
     );
     res.json(rows);
   } catch (err) { next(err); }

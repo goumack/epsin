@@ -25,6 +25,23 @@ export function moisDeLAnnee(dateDebut, dateFin) {
   return mois;
 }
 
+/**
+ * Mois dus pour un frais mensuel : ceux de l annee, jusqu au mois moisFin
+ * inclus (numero 1-12). « D octobre a juin » s arrete ainsi a juin meme si
+ * l annee scolaire court jusqu en juillet. Sans moisFin : toute l annee.
+ */
+export function moisDuFrais(moisAnnee, moisFin) {
+  if (!moisFin) return moisAnnee;
+  const i = moisAnnee.findIndex((m) => Number(m.slice(5)) === Number(moisFin));
+  return i < 0 ? moisAnnee : moisAnnee.slice(0, i + 1);
+}
+
+/** Nombre de mensualites deja exigibles : les mois deja commences. */
+export function nbMoisExigibles(mois, maintenant = new Date()) {
+  const courant = moisCourant(maintenant);
+  return mois.filter((m) => m <= courant).length;
+}
+
 /** Mois courant au format "AAAA-MM". */
 export function moisCourant(maintenant = new Date()) {
   return `${maintenant.getFullYear()}-${String(maintenant.getMonth() + 1).padStart(2, '0')}`;
