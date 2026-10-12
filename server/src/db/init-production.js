@@ -45,7 +45,7 @@ export async function initialiserBase({
                                     inspection_academie, inspection_ief)
          VALUES ($1,$2,$3,$4,$5,$6,$7)`,
         [
-          process.env.ETAB_NOM || 'École Privée Serighe Ibrahima Niang',
+          process.env.ETAB_NOM || 'École Privée Serigne Ibrahima Niang',
           process.env.ETAB_SIGLE || 'EPSIN - YENE',
           process.env.ETAB_ADRESSE || 'Dakar, Senegal',
           process.env.ETAB_TELEPHONE || '+221 33 000 00 00',
