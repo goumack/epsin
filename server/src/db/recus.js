@@ -12,11 +12,13 @@
  */
 export async function prochainNumeroRecu(client, date = new Date()) {
   await client.query(`SELECT pg_advisory_xact_lock(hashtext('epsin_numero_recu'))`);
-  const prefixe = `REC-${date.getFullYear()}-`;
+  // Le poste de l ecole a sa propre serie (REC-2026-P00001) : un recu emis
+  // pendant une coupure ne peut pas reprendre un numero emis en ligne
+  const prefixe = `REC-${date.getFullYear()}-${process.env.EPSIN_MODE === 'poste' ? 'P' : ''}`;
   const { rows } = await client.query(
-    `SELECT COALESCE(MAX(substring(numero_recu FROM '^REC-[0-9]{4}-([0-9]+)$')::int), 0) AS dernier
+    `SELECT COALESCE(MAX(substring(numero_recu FROM $2)::int), 0) AS dernier
      FROM paiement WHERE numero_recu LIKE $1`,
-    [`${prefixe}%`]
+    [`${prefixe}%`, `^${prefixe}([0-9]+)$`]
   );
   return `${prefixe}${String(rows[0].dernier + 1).padStart(5, '0')}`;
 }

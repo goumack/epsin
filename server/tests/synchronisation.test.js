@@ -2,16 +2,19 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { appliquerMigrations } from '../src/db/migrate.js';
 import {
-  lireChangements, appliquerChangements, instantane, preparerServeur, SEUIL_EN_LIGNE,
+  lireChangements, appliquerChangements, instantane, placerSequencesPoste, SEUIL_POSTE,
 } from '../src/sync/noyau.js';
 import { synchroniser, cloner } from '../src/sync/poste.js';
+import { prochainNumeroRecu } from '../src/db/recus.js';
+import { chiffrer, dechiffrer } from '../src/securite/chiffrement.js';
 
 /**
  * SYNCHRONISATION POSTE <-> SERVEUR EN LIGNE, sur deux vraies bases.
  *
- * Le poste de l ecole fait foi et travaille sans internet ; en ligne, seuls
- * les parents agissent. Quand la connexion revient, chaque cote recoit ce
- * que l autre a fait, sans doublon ni aller-retour infini.
+ * Le site en ligne fait reference : tout le monde y travaille. Le poste de
+ * l ecole en garde une copie a jour, sert de secours pendant une coupure,
+ * et envoie ce qui y a ete fait des que la connexion revient — sans
+ * doublon, sans collision de numeros, sans aller-retour infini.
  */
 
 const url = (nom) => process.env.DATABASE_URL.replace(/\/[^/?]+(\?|$)/, `/${nom}$1`);
@@ -26,10 +29,18 @@ const distant = () => ({
   },
   envoyer: async (changements) => ({ appliques: await appliquerChangements(enLigne, changements) }),
   instantane: () => instantane(enLigne),
-  preparer: () => preparerServeur(enLigne),
 });
 
 const un = async (base, sql, params) => (await base.query(sql, params)).rows[0];
+
+/** Execute fn avec EPSIN_MODE donne, puis le retablit. */
+async function enMode(mode, fn) {
+  const avant = process.env.EPSIN_MODE;
+  process.env.EPSIN_MODE = mode;
+  try { return await fn(); } finally {
+    if (avant === undefined) delete process.env.EPSIN_MODE; else process.env.EPSIN_MODE = avant;
+  }
+}
 
 beforeAll(async () => {
   admin = new pg.Pool({ connectionString: url('postgres') });
@@ -39,7 +50,7 @@ beforeAll(async () => {
   }
   enLigne = new pg.Pool({ connectionString: url(NOMS.enLigne) });
   poste = new pg.Pool({ connectionString: url(NOMS.poste) });
-  // Comme le poste et le serveur en mode copie : le journal est tenu
+  // Comme le poste et le serveur en ligne synchronise : le journal est tenu
   for (const base of [enLigne, poste]) {
     base.on('connect', (client) => client.query(`SET epsin.journal = 'on'`));
   }
@@ -76,31 +87,64 @@ describe('Premier lancement du poste : copie de la base en ligne', () => {
     expect(await un(poste, `SELECT COUNT(*)::int AS n FROM sync_journal`)).toEqual({ n: 0 });
   });
 
-  it('les nouveaux identifiants du poste suivent ceux copies', async () => {
-    const e = await un(poste, `INSERT INTO eleve (matricule, prenom, nom) VALUES ('EP-2026-0002', 'Moussa', 'Ba') RETURNING id`);
-    expect(e.id).toBe(2);
+  it('le poste numerote dans sa propre plage, le site en ligne continue la sienne', async () => {
+    const p = await un(poste, `INSERT INTO eleve (matricule, prenom, nom) VALUES ('EP-2026-P001', 'Moussa', 'Ba') RETURNING id`);
+    expect(p.id).toBe(SEUIL_POSTE + 1);
+    const l = await un(enLigne, `INSERT INTO eleve (matricule, prenom, nom) VALUES ('EP-2026-0002', 'Ibou', 'Sarr') RETURNING id`);
+    expect(l.id).toBe(2);
   });
 
-  it('les lignes creees en ligne partent au-dela d un milliard', async () => {
-    const n = await un(enLigne, `INSERT INTO notification (utilisateur_id, type, titre) VALUES (1, 'test', 'x') RETURNING id`);
-    expect(n.id).toBeGreaterThan(SEUIL_EN_LIGNE);
-    await enLigne.query(`DELETE FROM notification WHERE id = $1`, [n.id]);
+  it('replacer les sequences est sans effet de bord (a chaque demarrage)', async () => {
+    await placerSequencesPoste(poste);
+    const t = await un(poste, `INSERT INTO tuteur (prenom, nom, telephone) VALUES ('A', 'B', '770000001') RETURNING id`);
+    expect(t.id).toBe(SEUIL_POSTE + 1);
+    await poste.query(`DELETE FROM tuteur WHERE id = $1`, [t.id]);
+    await placerSequencesPoste(poste);
+    const e = await un(poste, `SELECT nextval(pg_get_serial_sequence('eleve', 'id'))::int AS n`);
+    expect(e.n).toBe(SEUIL_POSTE + 2);
   });
 });
 
-describe('Travail hors ligne sur le poste, puis connexion', () => {
+describe('Le personnel travaille en ligne : le poste reste a jour', () => {
+  it('recoit ce qui a ete fait en ligne, comptes compris', async () => {
+    await enLigne.query(`UPDATE utilisateur SET nom = 'Diop Sow', mot_de_passe = 'empreinte-2' WHERE id = 1`);
+    await enLigne.query(`UPDATE classe SET salle = 'Salle 3' WHERE id = 1`);
+    const r = await synchroniser(poste, distant());
+    expect(r.recus).toBeGreaterThanOrEqual(3);
+    expect(await un(poste, `SELECT prenom FROM eleve WHERE id = 2`)).toEqual({ prenom: 'Ibou' });
+    expect(await un(poste, `SELECT nom, mot_de_passe FROM utilisateur WHERE id = 1`))
+      .toEqual({ nom: 'Diop Sow', mot_de_passe: 'empreinte-2' });
+    expect(await un(poste, `SELECT salle FROM classe WHERE id = 1`)).toEqual({ salle: 'Salle 3' });
+  });
+
+  it('ce que font les parents en ligne arrive aussi', async () => {
+    const pel = await un(enLigne,
+      `INSERT INTO paiement_en_ligne (mode, eleve_id, frais_id, annee_id, nb_mois, montant, statut, transaction_id)
+       VALUES ('lien', 1, 1, 1, 1, 10000, 'a_verifier', 'T_PARENT') RETURNING id`);
+    await enLigne.query(`INSERT INTO absence (eleve_id, date_abs, type, confirmee, motif_tuteur) VALUES (1, '2026-10-20', 'absence', false, 'Malade')`);
+    await synchroniser(poste, distant());
+    expect(await un(poste, `SELECT statut, transaction_id FROM paiement_en_ligne WHERE id = $1`, [pel.id]))
+      .toEqual({ statut: 'a_verifier', transaction_id: 'T_PARENT' });
+    expect(await un(poste, `SELECT motif_tuteur FROM absence WHERE eleve_id = 1`)).toEqual({ motif_tuteur: 'Malade' });
+    // Ce qui vient d en ligne ne repart pas en ligne
+    expect(await un(poste, `SELECT COUNT(*)::int AS n FROM sync_journal`)).toEqual({ n: 0 });
+  });
+});
+
+describe('Coupure internet : travail sur le poste, puis retour de la connexion', () => {
   it('envoie tout ce qui a ete fait sur le poste', async () => {
-    // L eleve 2 a ete inscrit plus haut ; on encaisse et on corrige un nom
-    await poste.query(`INSERT INTO inscription (eleve_id, classe_id, annee_id) VALUES (2, 1, 1)`);
+    await poste.query(`INSERT INTO inscription (eleve_id, classe_id, annee_id) VALUES ($1, 1, 1)`, [SEUIL_POSTE + 1]);
     await poste.query(`INSERT INTO paiement (eleve_id, frais_id, annee_id, montant, mode, numero_recu, mois_couvert)
-                       VALUES (2, 1, 1, 10000, 'especes', 'REC-2026-00001', '2027-06')`);
+                       VALUES ($1, 1, 1, 10000, 'especes', 'REC-2026-P00001', '2027-06')`, [SEUIL_POSTE + 1]);
     await poste.query(`UPDATE eleve SET nom = 'Diop Ndiaye' WHERE id = 1`);
 
     const r = await synchroniser(poste, distant());
-    expect(r.envoyes).toBeGreaterThanOrEqual(4);
+    expect(r.envoyes).toBeGreaterThanOrEqual(3);
     expect(await un(enLigne, `SELECT nom FROM eleve WHERE id = 1`)).toEqual({ nom: 'Diop Ndiaye' });
-    expect(await un(enLigne, `SELECT numero_recu, mois_couvert FROM paiement WHERE eleve_id = 2`))
-      .toEqual({ numero_recu: 'REC-2026-00001', mois_couvert: '2027-06' });
+    expect(await un(enLigne, `SELECT prenom, matricule FROM eleve WHERE id = $1`, [SEUIL_POSTE + 1]))
+      .toEqual({ prenom: 'Moussa', matricule: 'EP-2026-P001' });
+    expect(await un(enLigne, `SELECT numero_recu, mois_couvert FROM paiement WHERE eleve_id = $1`, [SEUIL_POSTE + 1]))
+      .toEqual({ numero_recu: 'REC-2026-P00001', mois_couvert: '2027-06' });
   });
 
   it('sans aller-retour : le serveur en ligne ne renvoie pas ce qu il a recu', async () => {
@@ -109,43 +153,26 @@ describe('Travail hors ligne sur le poste, puis connexion', () => {
     expect(r).toEqual({ recus: 0, envoyes: 0 });
   });
 
+  it('inscriptions des deux cotes pendant la coupure : aucune collision', async () => {
+    const p = await un(poste, `INSERT INTO eleve (matricule, prenom, nom) VALUES ('EP-2026-P002', 'Coupure', 'Poste') RETURNING id`);
+    const l = await un(enLigne, `INSERT INTO eleve (matricule, prenom, nom) VALUES ('EP-2026-0003', 'Coupure', 'En ligne') RETURNING id`);
+    await synchroniser(poste, distant());
+    for (const base of [poste, enLigne]) {
+      const { rows } = await base.query(`SELECT id FROM eleve WHERE prenom = 'Coupure' ORDER BY id`);
+      expect(rows.map((x) => x.id)).toEqual([l.id, p.id]);
+    }
+  });
+
   it('une suppression sur le poste est repercutee', async () => {
-    await poste.query(`DELETE FROM paiement WHERE numero_recu = 'REC-2026-00001'`);
+    await poste.query(`DELETE FROM paiement WHERE numero_recu = 'REC-2026-P00001'`);
     await synchroniser(poste, distant());
     expect(await un(enLigne, `SELECT COUNT(*)::int AS n FROM paiement`)).toEqual({ n: 0 });
   });
 });
 
-describe('Ce que les parents font en ligne arrive sur le poste', () => {
-  it('declaration Wave, absence signalee, nouveau mot de passe', async () => {
-    const pel = await un(enLigne,
-      `INSERT INTO paiement_en_ligne (mode, eleve_id, frais_id, annee_id, nb_mois, montant, statut, transaction_id)
-       VALUES ('lien', 1, 1, 1, 1, 10000, 'a_verifier', 'T_PARENT') RETURNING id`);
-    await enLigne.query(`INSERT INTO absence (eleve_id, date_abs, type, confirmee, motif_tuteur) VALUES (1, '2026-10-20', 'absence', false, 'Malade')`);
-    await enLigne.query(`UPDATE utilisateur SET mot_de_passe = 'empreinte-parent', doit_changer_mdp = false WHERE id = 1`);
-
-    const r = await synchroniser(poste, distant());
-    expect(r.recus).toBe(3);
-    expect(await un(poste, `SELECT statut, transaction_id FROM paiement_en_ligne WHERE id = $1`, [pel.id]))
-      .toEqual({ statut: 'a_verifier', transaction_id: 'T_PARENT' });
-    expect(await un(poste, `SELECT motif_tuteur FROM absence WHERE eleve_id = 1`)).toEqual({ motif_tuteur: 'Malade' });
-    expect(await un(poste, `SELECT mot_de_passe FROM utilisateur WHERE id = 1`)).toEqual({ mot_de_passe: 'empreinte-parent' });
-    // Ce qui vient d en ligne ne repart pas en ligne
-    expect(await un(poste, `SELECT COUNT(*)::int AS n FROM sync_journal`)).toEqual({ n: 0 });
-  });
-
-  it('d un compte, seul le mot de passe vient d en ligne, jamais le reste', async () => {
-    await enLigne.query(`UPDATE utilisateur SET nom = 'Pirate', email = 'pirate@epsin.sn', actif = false, mot_de_passe = 'empreinte-2' WHERE id = 1`);
-    await synchroniser(poste, distant());
-    expect(await un(poste, `SELECT nom, email, actif, mot_de_passe FROM utilisateur WHERE id = 1`))
-      .toEqual({ nom: 'Diop', email: 'ep-2026-0001@epsin.sn', actif: true, mot_de_passe: 'empreinte-2' });
-  });
-});
-
-describe('Conflits : le poste fait foi', () => {
+describe('Conflits', () => {
   it('un paiement Wave valide sur le poste ne redevient pas « a verifier »', async () => {
     const pel = await un(poste, `SELECT id FROM paiement_en_ligne LIMIT 1`);
-    // Hors ligne, la caisse valide ; en ligne, le parent redeclare
     await poste.query(`UPDATE paiement_en_ligne SET statut = 'reussi' WHERE id = $1`, [pel.id]);
     await enLigne.query(`UPDATE paiement_en_ligne SET statut = 'a_verifier', transaction_id = 'T_BIS' WHERE id = $1`, [pel.id]);
 
@@ -154,7 +181,7 @@ describe('Conflits : le poste fait foi', () => {
     expect(await un(enLigne, `SELECT statut FROM paiement_en_ligne WHERE id = $1`, [pel.id])).toEqual({ statut: 'reussi' });
   });
 
-  it('une ligne modifiee sur le poste et pas encore envoyee l emporte', async () => {
+  it('une ligne modifiee sur le poste pendant la coupure l emporte', async () => {
     await poste.query(`UPDATE absence SET confirmee = true, justifiee = true WHERE eleve_id = 1`);
     await enLigne.query(`UPDATE absence SET motif_tuteur = 'Rendez-vous' WHERE eleve_id = 1`);
     await synchroniser(poste, distant());
@@ -166,13 +193,42 @@ describe('Conflits : le poste fait foi', () => {
 
   it('tables a cle composee (tuteurs d un eleve)', async () => {
     const t = await un(poste, `INSERT INTO tuteur (prenom, nom, telephone) VALUES ('Fatou', 'Diop', '770000000') RETURNING id`);
-    // Table vide au moment de la copie : la numerotation repart bien de 1
-    expect(t.id).toBe(1);
     await poste.query(`INSERT INTO eleve_tuteur (eleve_id, tuteur_id, lien, principal) VALUES (1, $1, 'mere', true)`, [t.id]);
     await synchroniser(poste, distant());
     expect(await un(enLigne, `SELECT lien FROM eleve_tuteur WHERE eleve_id = 1 AND tuteur_id = $1`, [t.id])).toEqual({ lien: 'mere' });
     await poste.query(`DELETE FROM eleve_tuteur WHERE eleve_id = 1 AND tuteur_id = $1`, [t.id]);
     await synchroniser(poste, distant());
     expect(await un(enLigne, `SELECT COUNT(*)::int AS n FROM eleve_tuteur`)).toEqual({ n: 0 });
+  });
+});
+
+describe('Numeros et fiches communs aux deux cotes', () => {
+  it('le poste a sa propre serie de recus', async () => {
+    await enLigne.query(`INSERT INTO paiement (eleve_id, frais_id, annee_id, montant, mode, numero_recu)
+                         VALUES (1, 1, 1, 10000, 'especes', 'REC-2026-00007')`);
+    await synchroniser(poste, distant());
+    const date = new Date('2026-11-02');
+    const client = await poste.connect();
+    try {
+      await client.query('BEGIN');
+      expect(await enMode('poste', () => prochainNumeroRecu(client, date))).toBe('REC-2026-P00001');
+      expect(await enMode('replique', () => prochainNumeroRecu(client, date))).toBe('REC-2026-00008');
+      await client.query('ROLLBACK');
+    } finally { client.release(); }
+  });
+
+  it('une fiche d acces creee en ligne se reimprime sur le poste', () => {
+    const avant = { jwt: process.env.JWT_SECRET, jeton: process.env.SYNC_JETON };
+    try {
+      process.env.SYNC_JETON = 'jeton-commun-0123456789abcdef';
+      process.env.JWT_SECRET = 'secret-du-site-en-ligne';
+      const chiffre = chiffrer('K7MP-4QXR');
+      process.env.JWT_SECRET = 'secret-du-poste';
+      expect(dechiffrer(chiffre)).toBe('K7MP-4QXR');
+    } finally {
+      for (const [cle, val] of [['JWT_SECRET', avant.jwt], ['SYNC_JETON', avant.jeton]]) {
+        if (val === undefined) delete process.env[cle]; else process.env[cle] = val;
+      }
+    }
   });
 });

@@ -129,8 +129,19 @@ export async function appliquerChangements(base, changements, { politique = null
   }
 }
 
-/** Remet chaque sequence au-dessus du plus grand identifiant de sa table. */
-export async function recalerSequences(client) {
+/**
+ * Les identifiants crees sur le poste de l ecole partent de ce seuil ; ceux
+ * du site en ligne restent en dessous. Les deux ne se croisent jamais, meme
+ * quand on a travaille des deux cotes pendant une coupure.
+ */
+export const SEUIL_POSTE = 1500000000;
+
+/**
+ * Cote poste : place chaque sequence dans la plage du poste, au-dessus du
+ * plus grand identifiant deja cree sur le poste. Relancable sans effet de
+ * bord (a chaque demarrage du poste).
+ */
+export async function placerSequencesPoste(client) {
   const { rows } = await client.query(
     `SELECT c.relname AS table_nom, a.attname AS colonne,
             pg_get_serial_sequence(quote_ident(c.relname), a.attname) AS sequence
@@ -140,11 +151,10 @@ export async function recalerSequences(client) {
        AND pg_get_serial_sequence(quote_ident(c.relname), a.attname) IS NOT NULL`
   );
   for (const s of rows) {
-    // Table vide : la sequence repart de 1 (troisieme argument a faux)
     await client.query(
-      `SELECT setval($1, GREATEST(m, 1), m > 0)
-       FROM (SELECT COALESCE(MAX(${identifiant(s.colonne)}), 0) AS m FROM ${identifiant(s.table_nom)}) x`,
-      [s.sequence]
+      `SELECT setval($1, GREATEST(COALESCE(MAX(${identifiant(s.colonne)}), 0), $2))
+       FROM ${identifiant(s.table_nom)} WHERE ${identifiant(s.colonne)} >= $2`,
+      [s.sequence, SEUIL_POSTE]
     );
   }
 }
@@ -190,7 +200,7 @@ export async function chargerInstantane(base, inst) {
         );
       }
     }
-    await recalerSequences(client);
+    await placerSequencesPoste(client);
     await client.query(`DELETE FROM sync_journal`);
     await client.query('COMMIT');
   } catch (err) {
@@ -212,25 +222,4 @@ export async function ecrireEtat(base, cle, valeur) {
      ON CONFLICT (cle) DO UPDATE SET valeur = EXCLUDED.valeur`,
     [cle, valeur == null ? null : String(valeur)]
   );
-}
-
-/** Tables ou les parents creent des lignes en ligne. */
-export const CREEES_EN_LIGNE = ['paiement_en_ligne', 'absence', 'message', 'notification', 'journal_audit'];
-/** Les identifiants crees en ligne partent de ce seuil : le poste ne l atteint jamais. */
-export const SEUIL_EN_LIGNE = 1000000000;
-
-/**
- * Cote serveur en ligne : reserve une plage d identifiants aux lignes creees
- * en ligne (au-dela d un milliard), pour qu elles ne croisent jamais celles
- * du poste. Relancable sans effet de bord.
- */
-export async function preparerServeur(base) {
-  // Noms de tables fixes, ci-dessus : aucune entree exterieure dans la requete
-  for (const table of CREEES_EN_LIGNE) {
-    await base.query(
-      `SELECT setval(pg_get_serial_sequence($1, 'id'),
-                     GREATEST((SELECT COALESCE(MAX(id), 0) FROM ${table}), $2))`,
-      [table, SEUIL_EN_LIGNE]
-    );
-  }
 }

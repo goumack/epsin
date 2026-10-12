@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { pool, query } from '../db/pool.js';
 import { authentifier, autoriser } from '../middleware/auth.js';
 import {
-  lireChangements, appliquerChangements, instantane, preparerServeur,
+  lireChangements, appliquerChangements, instantane,
 } from '../sync/noyau.js';
 import { synchroniser, statutSynchro, distantHttp } from '../sync/poste.js';
 
@@ -40,22 +40,11 @@ routesServeur.get('/reception', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** Modifications du poste, qui fait foi : appliquees telles quelles. */
+/** Modifications faites sur le poste pendant une coupure : appliquees telles quelles. */
 routesServeur.post('/envoi', async (req, res, next) => {
   try {
     const changements = Array.isArray(req.body?.changements) ? req.body.changements : [];
     res.json({ appliques: await appliquerChangements(pool, changements) });
-  } catch (err) { next(err); }
-});
-
-/**
- * Reserve une plage d identifiants aux lignes creees en ligne (au-dela d un
- * milliard), pour qu elles ne croisent jamais celles du poste. Relancable.
- */
-routesServeur.post('/preparer', async (req, res, next) => {
-  try {
-    await preparerServeur(pool);
-    res.json({ prepare: true });
   } catch (err) { next(err); }
 });
 

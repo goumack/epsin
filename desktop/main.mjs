@@ -1,7 +1,9 @@
 /**
  * EPSIN — programme Windows du poste de l ecole.
  *
- * Embarque tout ce qu il faut pour travailler SANS INTERNET :
+ * Le site en ligne fait reference ; ce poste en garde une copie a jour et
+ * sert de secours quand internet est coupe. Il embarque tout ce qu il faut
+ * pour travailler SANS INTERNET :
  *   - une base PostgreSQL, dans le dossier de donnees de l utilisateur ;
  *   - le serveur EPSIN (mode « poste ») et l interface ;
  *   - la synchronisation avec le site en ligne, des que la connexion est la.

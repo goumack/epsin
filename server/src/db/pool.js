@@ -18,7 +18,7 @@ export const pool = new Pool({
   idleTimeoutMillis: 30000,
 });
 
-// Poste de l ecole ou serveur en ligne en mode copie : chaque connexion
+// Poste de l ecole ou serveur en ligne synchronise : chaque connexion
 // tient le journal des modifications a synchroniser
 if (['poste', 'replique'].includes(process.env.EPSIN_MODE)) {
   pool.on('connect', (client) => {

@@ -52,17 +52,6 @@ export async function authentifier(req, res, next) {
         code: 'MOT_DE_PASSE_A_CHANGER',
       });
     }
-    // Serveur en ligne en mode copie : le personnel travaille sur le poste
-    // de l ecole, qui fait foi. En ligne, il consulte seulement ; seuls les
-    // parents y agissent (paiement Wave, absence signalee, messages).
-    if (process.env.EPSIN_MODE === 'replique' && rows[0].role !== 'parent'
-        && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !req.originalUrl.startsWith('/api/auth/')) {
-      return res.status(403).json({
-        erreur: 'Le site en ligne est en consultation pour le personnel : '
-          + 'faites cette operation sur le poste de l ecole, elle sera synchronisee.',
-        code: 'SERVEUR_EN_COPIE',
-      });
-    }
     req.user = rows[0];
     next();
   } catch {

@@ -3,17 +3,17 @@ import {
 } from './noyau.js';
 
 /**
- * Synchronisation vue du POSTE DE L ECOLE, qui fait foi.
+ * Synchronisation vue du POSTE DE L ECOLE, copie de secours du site en
+ * ligne, qui fait reference.
  *
  * Un cycle :
- *   1. RECEVOIR ce que les parents ont fait en ligne (declaration Wave,
- *      absence signalee, message, mot de passe) ;
- *   2. ENVOYER les modifications faites sur le poste.
+ *   1. RECEVOIR tout ce qui a ete fait en ligne (personnel et parents) :
+ *      le poste reste a jour, pret a prendre le relais ;
+ *   2. ENVOYER ce qui a ete fait sur le poste pendant une coupure.
  * Recevoir d abord limite les collisions : le poste envoie ensuite un etat
  * qui tient deja compte de l activite en ligne.
  *
- * `distant` est le serveur en ligne : { recevoir, envoyer, instantane,
- * preparer }. En production il passe par HTTP (distantHttp) ; dans les
+ * `distant` est le serveur en ligne : { recevoir, envoyer, instantane }. En production il passe par HTTP (distantHttp) ; dans les
  * tests, directement par une seconde base.
  */
 
@@ -27,25 +27,16 @@ async function clesEnAttente(local) {
 }
 
 /**
- * Regles d arbitrage a la reception. Le poste fait foi, sauf pour ce que
- * seul un parent peut faire en ligne :
- *   - un compte : seul son mot de passe (et sa derniere connexion) vient
- *     d en ligne, jamais le reste ;
- *   - une ligne modifiee sur le poste et pas encore envoyee : le poste
- *     l emporte ;
+ * Regles d arbitrage a la reception. Ce qui vient d en ligne s applique,
+ * sauf :
+ *   - une ligne modifiee sur le poste pendant une coupure et pas encore
+ *     envoyee : le poste l emporte (c est la saisie la plus recente) ;
  *   - un paiement en ligne deja valide ou rejete sur le poste ne revient
  *     pas a « en attente ».
  */
 export function politiqueReception(enAttente) {
   return async (ch, client) => {
-    const enAttenteIci = enAttente.has(cleChangement(ch));
-    if (ch.table === 'utilisateur') {
-      if (ch.operation === 'D' || enAttenteIci) return null;
-      return {
-        ...ch, colonnes: ['mot_de_passe', 'doit_changer_mdp', 'mdp_temporaire', 'derniere_connexion'],
-      };
-    }
-    if (enAttenteIci) return null;
+    if (enAttente.has(cleChangement(ch))) return null;
     if (ch.table === 'paiement_en_ligne' && ch.operation !== 'D') {
       const { rows } = await client.query(`SELECT statut FROM paiement_en_ligne WHERE id = $1`, [ch.cle.id]);
       const clos = ['reussi', 'rejete'];
@@ -86,13 +77,11 @@ export async function synchroniser(local, distant) {
 }
 
 /**
- * Premier lancement : le poste recupere toute la base en ligne et devient
- * la reference. Le serveur en ligne reserve d abord une plage d identifiants
- * aux lignes creees en ligne par les parents, pour qu elles ne croisent
- * jamais celles du poste.
+ * Premier lancement : le poste recupere toute la base en ligne. Ses propres
+ * identifiants partent ensuite de SEUIL_POSTE, pour ne jamais croiser ceux
+ * du site en ligne.
  */
 export async function cloner(local, distant) {
-  await distant.preparer();
   const inst = await distant.instantane();
   await chargerInstantane(local, inst);
   await ecrireEtat(local, 'curseur_reception', inst.curseur);
@@ -123,7 +112,6 @@ export function distantHttp(url, jeton, { delai = 60000 } = {}) {
     recevoir: (depuis) => appel('GET', `/reception?depuis=${depuis}`),
     envoyer: (changements) => appel('POST', '/envoi', { changements }),
     instantane: () => appel('GET', '/instantane'),
-    preparer: () => appel('POST', '/preparer'),
   };
 }
 

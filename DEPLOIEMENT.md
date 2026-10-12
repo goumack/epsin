@@ -187,24 +187,26 @@ serveur affiché avant de confirmer.
 
 ---
 
-## Le poste de l'école (programme Windows, sans internet)
+## Le poste de secours (programme Windows, sans internet)
 
-Le programme **EPSIN** s'installe sur un ordinateur de l'école. Il contient
-sa propre base de données et fonctionne **sans internet**. Ce poste devient
-la **référence** : tout le personnel y travaille, et le site en ligne n'en
-est qu'une copie, à jour, pour les parents.
+On travaille **en ligne**, comme d'habitude : le site en ligne fait
+référence. Le programme **EPSIN**, installé sur un ordinateur de l'école,
+en garde une copie à jour en permanence (toutes les 30 secondes), avec sa
+propre base de données.
 
-- Les modifications faites au poste partent vers le site en ligne dès que
-  la connexion revient, toutes les 30 secondes.
-- Ce que font les parents en ligne (paiement Wave déclaré, changement de mot
-  de passe) descend au poste.
-- En ligne, le personnel ne peut que **consulter**. Toute modification se
-  fait au poste.
-- Les autres ordinateurs de l'école ouvrent `http://<adresse du poste>:4545`
-  dans leur navigateur, même sans internet (menu EPSIN → *Accès depuis les
-  autres ordinateurs…*).
+- **Internet coupé** : on ouvre EPSIN sur le poste et on y travaille
+  normalement (encaissements, inscriptions, notes…).
+- **Retour de la connexion** : tout ce qui a été fait sur le poste part en
+  ligne tout seul. Rien à faire.
+- Les élèves inscrits et les reçus émis sur le poste ont leur propre série
+  (`EP-2026-P001`, `REC-2026-P00001`) : ils ne peuvent pas prendre le
+  numéro d'un élève ou d'un reçu créé en ligne au même moment.
+- Pendant une coupure, les autres ordinateurs de l'école ouvrent
+  `http://<adresse du poste>:4545` dans leur navigateur (menu EPSIN →
+  *Accès depuis les autres ordinateurs…*).
+- Le poste doit rester allumé avec EPSIN ouvert pour rester à jour.
 
-### 1. Passer le site en ligne en mode copie
+### 1. Activer la synchronisation sur le site en ligne
 
 Render → **epsin-api** → **Environment**, ajouter :
 
@@ -213,7 +215,9 @@ Render → **epsin-api** → **Environment**, ajouter :
 | `EPSIN_MODE` | `replique` |
 | `SYNC_JETON` | une longue chaîne secrète (32 caractères ou plus) |
 
-Puis **Manual Deploy → Deploy latest commit**.
+Puis **Manual Deploy → Deploy latest commit**. Le personnel continue de
+travailler en ligne normalement : ce réglage ajoute seulement le suivi des
+modifications pour le poste.
 
 ### 2. Construire l'installateur (une fois, sur un ordinateur de développement)
 
@@ -233,14 +237,14 @@ Le fichier produit est `desktop\dist\EPSIN-Installation-1.0.0.exe`.
 4. Attendre la fin de la copie, qui prend quelques minutes.
 
 On se connecte ensuite avec les mêmes comptes qu'en ligne. Le badge en haut
-de l'écran indique *Synchronisé* ou *Hors ligne · N en attente*.
+de l'écran du poste indique *Synchronisé* ou *Hors ligne · N en attente*.
 
 Les données sont dans `%APPDATA%\EPSIN` (menu EPSIN → *Ouvrir le dossier
 des données*). Pour les sauvegarder, copiez ce dossier pendant que le
 programme est **fermé**.
 
-> ⚠️ Un seul poste principal. Ne lancez pas une seconde copie de la base sur
-> un autre ordinateur. Les autres postes passent par le navigateur.
+> ⚠️ Un seul poste de secours. N'installez pas EPSIN sur un second
+> ordinateur : pendant une coupure, les autres passent par le navigateur.
 
 ---
 

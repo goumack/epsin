@@ -22,6 +22,7 @@ import paiementsEnLigneRoutes, { webhookWave } from './routes/paiements-en-ligne
 import { routesServeur, routesPoste } from './routes/synchronisation.js';
 import { pool } from './db/pool.js';
 import { demarrerSynchroAuto, distantHttp } from './sync/poste.js';
+import { placerSequencesPoste } from './sync/noyau.js';
 
 dotenv.config();
 
@@ -31,10 +32,12 @@ const PORT = process.env.PORT || 4000;
 /**
  * Modes de fonctionnement (EPSIN_MODE) :
  *   (absent)   serveur classique, base unique ;
- *   replique   serveur en ligne, copie du poste : le personnel y consulte,
- *              seuls les parents y agissent ;
- *   poste      poste de l ecole (programme Windows) : fait foi, fonctionne
- *              sans internet, se synchronise des que la connexion revient.
+ *   replique   serveur en ligne synchronise avec le poste de l ecole : la
+ *              reference, ou tout le monde travaille normalement ;
+ *   poste      poste de l ecole (programme Windows) : copie de secours,
+ *              tenue a jour en permanence ; on y travaille quand internet
+ *              est coupe, et ses modifications partent en ligne des que
+ *              la connexion revient.
  */
 const MODE = process.env.EPSIN_MODE || '';
 
@@ -124,6 +127,10 @@ if (process.env.NODE_ENV !== 'test') {
     console.log(`EPSIN API demarree sur http://localhost:${PORT}${MODE ? ` (mode ${MODE})` : ''}`);
   });
   // Poste de l ecole : synchronisation automatique des que possible
+  if (MODE === 'poste') {
+    // Identifiants du poste dans leur propre plage (postes deja installes compris)
+    placerSequencesPoste(pool).catch((err) => console.error('[synchro] sequences', err));
+  }
   if (MODE === 'poste' && process.env.SYNC_URL && process.env.SYNC_JETON) {
     demarrerSynchroAuto(pool, distantHttp(process.env.SYNC_URL, process.env.SYNC_JETON), {
       intervalle: Number(process.env.SYNC_INTERVALLE_S || 30) * 1000,

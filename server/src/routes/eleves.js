@@ -63,14 +63,22 @@ const schemaEleve = z.object({
   })).optional().default([]),
 });
 
-/** Genere un matricule du type EP-2026-0042. */
+/**
+ * Genere un matricule du type EP-2026-0042. Le poste de l ecole a sa propre
+ * serie (EP-2026-P001) : un eleve inscrit pendant une coupure ne peut pas
+ * prendre le numero d un eleve inscrit en ligne au meme moment.
+ */
 async function genererMatricule(client) {
   const annee = new Date().getFullYear();
+  const poste = process.env.EPSIN_MODE === 'poste';
+  const prefixe = `EP-${annee}-${poste ? 'P' : ''}`;
+  await client.query(`SELECT pg_advisory_xact_lock(hashtext('epsin_matricule'))`);
   const { rows } = await client.query(
-    `SELECT COUNT(*)::int AS n FROM eleve WHERE matricule LIKE $1`,
-    [`EP-${annee}-%`]
+    `SELECT COALESCE(MAX(substring(matricule FROM $2)::int), 0) AS dernier
+     FROM eleve WHERE matricule LIKE $1`,
+    [`${prefixe}%`, `^${prefixe}([0-9]+)$`]
   );
-  return `EP-${annee}-${String(rows[0].n + 1).padStart(4, '0')}`;
+  return `${prefixe}${String(rows[0].dernier + 1).padStart(poste ? 3 : 4, '0')}`;
 }
 
 // Liste paginee avec recherche et filtre par classe
