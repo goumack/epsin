@@ -2,11 +2,14 @@
  * Regles des mensualites, sans base ni requete : testables isolement.
  *
  * Un frais recurrent (la mensualite) est du chaque mois de l annee
- * scolaire. Les sommes versees sont imputees dans l ordre chronologique :
- * le premier versement solde octobre, le suivant novembre, etc. On ne
- * s appuie donc pas sur `mois_couvert`, que la caisse ne renseigne pas
- * toujours : seul le total verse compte, ce qui evite de faire payer deux
- * fois un mois regle au guichet sans mois indique.
+ * scolaire, jusqu a son dernier mois (juin, ou juillet pour une classe
+ * d examen). Imputation des versements :
+ *   1. un versement qui designe un mois (mois_couvert) regle CE mois — c est
+ *      le cas du dernier mois, paye d avance avec l inscription ;
+ *   2. les versements sans mois (ou l excedent d un mois deja regle) soldent
+ *      les mois restants dans l ordre chronologique : octobre, novembre...
+ * Un versement au guichet sans mois indique n est donc jamais perdu, et ne
+ * fait jamais payer deux fois le meme mois.
  */
 
 /** Mois de l annee scolaire, au format "AAAA-MM", de la rentree a la fin. */
@@ -47,47 +50,91 @@ export function moisCourant(maintenant = new Date()) {
   return `${maintenant.getFullYear()}-${String(maintenant.getMonth() + 1).padStart(2, '0')}`;
 }
 
+/** Normalise les versements : un total seul devient un versement sans mois. */
+function versementsDe(paiements) {
+  if (Array.isArray(paiements)) {
+    return paiements.map((p) => ({ montant: Number(p.montant) || 0, mois: p.mois || null }));
+  }
+  return [{ montant: Number(paiements) || 0, mois: null }];
+}
+
 /**
  * Etat de chaque mois : regle, partiellement regle, echu non regle, a venir.
- * `montant` est la mensualite, `paye` le total deja verse sur ce frais.
+ * `montant` est la mensualite ; `paiements` la liste des versements
+ * [{ montant, mois }] — ou, par compatibilite, un simple total verse.
  */
-export function etatDesMois(mois, montant, paye, maintenant = new Date()) {
+export function etatDesMois(mois, montant, paiements, maintenant = new Date()) {
   const m = Number(montant);
-  let reste = Number(paye) || 0;
+  const verse = Object.fromEntries(mois.map((x) => [x, 0]));
+  let libre = 0;
+
+  // 1. Les versements qui designent un mois reglent ce mois
+  for (const p of versementsDe(paiements)) {
+    if (p.mois && p.mois in verse) {
+      const part = Math.min(p.montant, Math.max(m - verse[p.mois], 0));
+      verse[p.mois] += part;
+      libre += p.montant - part;
+    } else {
+      libre += p.montant;
+    }
+  }
+  // 2. Le reste solde les mois dans l ordre chronologique
+  for (const x of mois) {
+    if (libre <= 0) break;
+    const part = Math.min(libre, Math.max(m - verse[x], 0));
+    verse[x] += part;
+    libre -= part;
+  }
+
   const courant = moisCourant(maintenant);
   return mois.map((libelle) => {
-    const verse = m > 0 ? Math.min(reste, m) : 0;
-    reste -= verse;
+    const v = verse[libelle];
     let statut;
-    if (m > 0 && verse >= m) statut = 'paye';
-    else if (verse > 0) statut = 'partiel';
+    if (m > 0 && v >= m) statut = 'paye';
+    else if (v > 0) statut = 'partiel';
     else if (libelle <= courant) statut = 'en_retard';
     else statut = 'a_venir';
-    return { mois: libelle, verse, reste_du: Math.max(m - verse, 0), statut };
+    return { mois: libelle, verse: v, reste_du: Math.max(m - v, 0), statut };
   });
 }
 
 /**
- * Montant a regler pour solder les `nbMois` prochains mois non regles.
- * Un mois partiellement regle compte pour un mois, au prorata de ce qu il
- * reste a payer dessus.
+ * Reste exigible a ce jour : ce qui manque sur les mois deja commences. Un
+ * mois paye d avance (juin a l inscription) ne dispense pas d octobre.
  */
-export function montantPourMois(etat, nbMois) {
+export function resteExigible(etat, maintenant = new Date()) {
+  const courant = moisCourant(maintenant);
+  return etat.filter((e) => e.mois <= courant).reduce((s, e) => s + e.reste_du, 0);
+}
+
+/** Mois non regles, dans l ordre de paiement : le dernier d abord si demande. */
+function moisARegler(etat, dernierDabord) {
   const aRegler = etat.filter((e) => e.statut !== 'paye');
+  return dernierDabord && aRegler.length ? [aRegler.at(-1), ...aRegler.slice(0, -1)] : aRegler;
+}
+
+/**
+ * Montant a regler pour solder `nbMois` mois non regles : les prochains dans
+ * l ordre, ou — a l inscription — le dernier mois de l annee d abord.
+ * Un mois partiellement regle compte pour un mois, au prorata de son reste.
+ */
+export function montantPourMois(etat, nbMois, { dernierDabord = false } = {}) {
+  const aRegler = moisARegler(etat, dernierDabord);
   if (nbMois < 1 || nbMois > aRegler.length) return null;
   return aRegler.slice(0, nbMois).reduce((s, e) => s + e.reste_du, 0);
 }
 
 /**
- * Repartit un versement sur les mois, dans l ordre chronologique, a partir
- * de ce qui est deja paye. Retourne une ligne par mois couvert :
- * [{ mois, montant }]. Un excedent au-dela de la fin de l annee est porte
- * sur une ligne sans mois (avance), pour ne jamais perdre d argent recu.
+ * Ventile un versement sur les mois non regles d un etat : dans l ordre
+ * chronologique, ou le dernier mois d abord (inscription). Une ligne par
+ * mois couvert : [{ mois, montant }]. Un excedent au-dela de la fin de
+ * l annee est porte sur une ligne sans mois (avance), pour ne jamais perdre
+ * d argent recu.
  */
-export function repartirVersement(mois, montantMensuel, dejaPaye, versement) {
+export function ventilerVersement(etat, versement, { dernierDabord = false } = {}) {
   const lignes = [];
   let restant = Number(versement) || 0;
-  for (const e of etatDesMois(mois, montantMensuel, dejaPaye)) {
+  for (const e of moisARegler(etat, dernierDabord)) {
     if (restant <= 0) break;
     if (e.reste_du <= 0) continue;
     const part = Math.min(restant, e.reste_du);
@@ -96,4 +143,13 @@ export function repartirVersement(mois, montantMensuel, dejaPaye, versement) {
   }
   if (restant > 0) lignes.push({ mois: null, montant: restant });
   return lignes;
+}
+
+/**
+ * Repartit un versement dans l ordre chronologique, a partir de ce qui est
+ * deja paye (total ou liste de versements). Forme historique de
+ * ventilerVersement, conservee pour ses appelants.
+ */
+export function repartirVersement(mois, montantMensuel, dejaPaye, versement) {
+  return ventilerVersement(etatDesMois(mois, montantMensuel, dejaPaye), versement);
 }

@@ -5,7 +5,8 @@ import { verifierEleveTuteur, estTuteur, eleveSuivi } from '../middleware/portee
 import { prochainNumeroRecu } from '../db/recus.js';
 import { montantEnLettres } from '../metier/montant-lettres.js';
 import {
-  moisDeLAnnee, moisDuFrais, nbMoisExigibles, etatDesMois, montantPourMois, repartirVersement,
+  moisDeLAnnee, moisDuFrais, nbMoisExigibles, etatDesMois, resteExigible,
+  montantPourMois, ventilerVersement,
 } from '../metier/mensualites.js';
 
 const router = Router();
@@ -82,7 +83,10 @@ async function lireBareme() {
       col = { libelle: f.libelle, recurrent: f.recurrent, obligatoire: f.obligatoire, mois_fin: f.mois_fin, montants: {} };
       colonnes.push(col);
     }
-    col.montants[f.niveau_id] = { id: f.id, montant: Number(f.montant), paiements: f.paiements };
+    // Le dernier mois du peut varier d un niveau a l autre (juillet en 3eme)
+    col.montants[f.niveau_id] = {
+      id: f.id, montant: Number(f.montant), paiements: f.paiements, mois_fin: f.mois_fin,
+    };
   }
   return {
     annee: an[0],
@@ -125,8 +129,13 @@ router.put('/bareme', autoriser(...CAISSE), async (req, res, next) => {
         return res.status(400).json({ erreur: 'Dernier mois du invalide' });
       }
       for (const v of Object.values(c.montants || {})) {
-        if (v !== null && v !== '' && !(Number(v) >= 0)) {
+        const montant = v !== null && typeof v === 'object' ? v.montant : v;
+        if (montant !== null && montant !== '' && montant !== undefined && !(Number(montant) >= 0)) {
           return res.status(400).json({ erreur: `Montant invalide pour « ${libelle} »` });
+        }
+        const fin = v !== null && typeof v === 'object' ? v.mois_fin : null;
+        if (fin != null && fin !== '' && !(Number(fin) >= 1 && Number(fin) <= 12)) {
+          return res.status(400).json({ erreur: 'Dernier mois du invalide' });
         }
       }
     }
@@ -151,7 +160,12 @@ router.put('/bareme', autoriser(...CAISSE), async (req, res, next) => {
         const recurrent = Boolean(c.recurrent);
         const moisFin = recurrent && c.mois_fin ? Number(c.mois_fin) : null;
         const obligatoire = c.obligatoire !== false;
-        for (const [niveauId, valeur] of Object.entries(c.montants || {})) {
+        for (const [niveauId, cellule] of Object.entries(c.montants || {})) {
+          // Une case : un montant, ou { montant, mois_fin } quand le dernier
+          // mois du differe de celui de la colonne (3eme : juillet)
+          const enObjet = cellule !== null && typeof cellule === 'object';
+          const valeur = enObjet ? cellule.montant ?? null : cellule;
+          const moisFinCase = recurrent && enObjet && cellule.mois_fin ? Number(cellule.mois_fin) : moisFin;
           const { rows: ex } = await client.query(
             `SELECT f.id, (SELECT COUNT(*)::int FROM paiement p WHERE p.frais_id = f.id) AS paiements
              FROM frais f WHERE f.annee_id = $1 AND f.niveau_id = $2 AND lower(f.libelle) = lower($3)`,
@@ -169,13 +183,13 @@ router.put('/bareme', autoriser(...CAISSE), async (req, res, next) => {
             await client.query(
               `UPDATE frais SET libelle = $2, montant = $3, recurrent = $4, obligatoire = $5, mois_fin = $6
                WHERE id = $1`,
-              [ex[0].id, libelle, Number(valeur), recurrent, obligatoire, moisFin]
+              [ex[0].id, libelle, Number(valeur), recurrent, obligatoire, moisFinCase]
             );
           } else {
             await client.query(
               `INSERT INTO frais (annee_id, niveau_id, libelle, montant, recurrent, obligatoire, mois_fin)
                VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-              [an[0].id, Number(niveauId), libelle, Number(valeur), recurrent, obligatoire, moisFin]
+              [an[0].id, Number(niveauId), libelle, Number(valeur), recurrent, obligatoire, moisFinCase]
             );
           }
         }
@@ -228,21 +242,28 @@ router.get('/paiements', autoriser(...CAISSE, 'censeur'), async (req, res, next)
  */
 async function echeancier(eleveId, fraisId, db = { query }) {
   const { rows } = await db.query(
-    `SELECT f.id, f.libelle, f.montant, f.recurrent, f.mois_fin, a.date_debut, a.date_fin,
-            COALESCE((SELECT SUM(p.montant) FROM paiement p
-                      WHERE p.eleve_id = $1 AND p.frais_id = f.id
-                        AND p.annee_id = f.annee_id AND NOT p.annule), 0) AS paye
+    `SELECT f.id, f.libelle, f.montant, f.recurrent, f.mois_fin, a.date_debut, a.date_fin
      FROM frais f JOIN annee_scolaire a ON a.id = f.annee_id
-     WHERE f.id = $2 AND a.active`,
-    [eleveId, fraisId]
+     WHERE f.id = $1 AND a.active`,
+    [fraisId]
   );
   if (!rows[0]) return null;
   const f = rows[0];
+  // Chaque versement avec son mois : celui paye a l inscription (le dernier
+  // mois) regle ce mois-la, pas octobre
+  const { rows: versements } = await db.query(
+    `SELECT montant, mois_couvert AS mois FROM paiement
+     WHERE eleve_id = $1 AND frais_id = $2 AND NOT annule
+       AND annee_id = (SELECT annee_id FROM frais WHERE id = $2)
+     ORDER BY id`,
+    [eleveId, fraisId]
+  );
   // « D octobre a juin » : les mois apres le dernier mois du ne sont pas dus
   const mois = moisDuFrais(moisDeLAnnee(f.date_debut, f.date_fin), f.mois_fin);
   return {
     id: f.id, libelle: f.libelle, montant: Number(f.montant), recurrent: f.recurrent,
-    paye: Number(f.paye), mois, etat: etatDesMois(mois, f.montant, f.paye),
+    paye: versements.reduce((t, v) => t + Number(v.montant), 0),
+    mois, etat: etatDesMois(mois, f.montant, versements),
   };
 }
 
@@ -307,16 +328,21 @@ router.post('/paiements', autoriser(...CAISSE), async (req, res, next) => {
       if (fraisId && !ech) return res.status(400).json({ erreur: 'Frais introuvable pour l annee en cours' });
       const mensuel = Boolean(ech?.recurrent);
 
+      // A l inscription, le mois paye est le dernier de l annee (juin, ou
+      // juillet pour une classe d examen), pas le mois en cours
+      const dernierDabord = mensuel && Boolean(el.dernier_mois);
       let montant = Number(el.montant);
       if (mensuel && el.nb_mois != null && el.nb_mois !== '') {
         const nb = Number(el.nb_mois);
-        montant = Number.isInteger(nb) ? montantPourMois(ech.etat, nb) : null;
+        montant = Number.isInteger(nb) ? montantPourMois(ech.etat, nb, { dernierDabord }) : null;
         if (montant == null) {
           return res.status(400).json({ erreur: `${ech.libelle} : il ne reste pas autant de mois a regler` });
         }
       }
       if (!(montant > 0)) return res.status(400).json({ erreur: 'Eleve et montant positif requis' });
-      prepares.push({ fraisId, libelle: ech?.libelle || null, mensuel, montant, mois: el.mois_couvert || null });
+      prepares.push({
+        fraisId, libelle: ech?.libelle || null, mensuel, dernierDabord, montant, mois: el.mois_couvert || null,
+      });
     }
 
     const lignes = await transaction(async (client) => {
@@ -326,7 +352,7 @@ router.post('/paiements', autoriser(...CAISSE), async (req, res, next) => {
         // ne doit pas faire couvrir deux fois le meme mois
         const etat = p.mensuel ? await echeancier(Number(eleve_id), p.fraisId, client) : null;
         const ventilation = p.mensuel
-          ? repartirVersement(etat.mois, etat.montant, etat.paye, p.montant)
+          ? ventilerVersement(etat.etat, p.montant, { dernierDabord: p.dernierDabord })
           : [{ mois: p.mois, montant: p.montant }];
 
         for (const v of ventilation) {
@@ -433,83 +459,112 @@ async function calculerSituation(eleveId) {
     [eleveId, info[0].niveau_id]
   );
 
-  const exigibles = await exigiblesParFrais();
+  // Annee et versements de l eleve, mois par mois
+  const { rows: an } = await query(
+    `SELECT date_debut, date_fin FROM annee_scolaire WHERE active LIMIT 1`
+  );
+  const moisAnnee = an[0] ? moisDeLAnnee(an[0].date_debut, an[0].date_fin) : [];
+  const { rows: versements } = await query(
+    `SELECT frais_id, montant, mois_couvert AS mois FROM paiement
+     WHERE eleve_id = $1 AND NOT annule
+       AND annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)
+     ORDER BY id`,
+    [eleveId]
+  );
+
   const lignes = frais.map((f) => {
+    if (!f.recurrent) {
+      const du = Number(f.montant);
+      return { ...f, du, reste: Math.max(du - Number(f.paye), 0) };
+    }
     // Un frais mensuel est du pour chaque mois deja commence, jusqu a son
-    // dernier mois (juin pour « octobre a juin »)
-    const du = f.recurrent ? Number(f.montant) * (exigibles[f.id] ?? 0) : Number(f.montant);
-    return { ...f, du, reste: Math.max(du - Number(f.paye), 0) };
+    // dernier mois (juin, ou juillet pour une classe d examen). Le mois paye
+    // d avance a l inscription ne dispense pas des mois en cours.
+    const mois = moisDuFrais(moisAnnee, f.mois_fin);
+    const etat = etatDesMois(mois, f.montant, versements.filter((v) => v.frais_id === f.id));
+    return {
+      ...f, etat,
+      du: Number(f.montant) * nbMoisExigibles(mois),
+      reste: resteExigible(etat),
+    };
   });
 
   const totalDu = lignes.reduce((s, l) => s + l.du, 0);
   const totalPaye = lignes.reduce((s, l) => s + Number(l.paye), 0);
+  const totalReste = lignes.reduce((s, l) => s + l.reste, 0);
 
   return {
     eleve: info[0],
     lignes,
     total_du: totalDu,
     total_paye: totalPaye,
-    reste: Math.max(totalDu - totalPaye, 0),
-    a_jour: totalPaye >= totalDu,
+    reste: totalReste,
+    a_jour: totalReste === 0,
   };
-}
-
-/**
- * Nombre de mensualites exigibles a ce jour, frais mensuel par frais
- * mensuel de l annee active : { [frais_id]: nombre }. Chaque frais s arrete
- * a son dernier mois du ; apres celui-ci, la totalite est due, jamais plus.
- */
-async function exigiblesParFrais(maintenant = new Date()) {
-  const { rows } = await query(
-    `SELECT f.id, f.mois_fin, a.date_debut, a.date_fin
-     FROM frais f JOIN annee_scolaire a ON a.id = f.annee_id
-     WHERE a.active AND f.recurrent`
-  );
-  const resultat = {};
-  for (const f of rows) {
-    resultat[f.id] = nbMoisExigibles(moisDuFrais(moisDeLAnnee(f.date_debut, f.date_fin), f.mois_fin), maintenant);
-  }
-  return resultat;
 }
 
 // Liste des impayes
 router.get('/impayes', autoriser(...CAISSE, 'censeur'), async (req, res, next) => {
   try {
-    const { rows } = await query(
-      `WITH du_par_eleve AS (
-         SELECT e.id AS eleve_id,
-                SUM(CASE WHEN f.recurrent
-                         THEN f.montant * COALESCE(($1::jsonb ->> f.id::text)::int, 0)
-                         ELSE f.montant END) AS total_du
-         FROM eleve e
-         JOIN inscription i ON i.eleve_id = e.id
-           AND i.annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)
-         JOIN classe c ON c.id = i.classe_id
-         JOIN frais f ON (f.niveau_id IS NULL OR f.niveau_id = c.niveau_id)
-           AND f.annee_id = i.annee_id AND f.obligatoire
-         WHERE e.statut = 'actif'
-         GROUP BY e.id
-       )
-       SELECT e.id, e.matricule, e.prenom, e.nom, c.libelle AS classe,
-              d.total_du,
-              COALESCE(SUM(p.montant) FILTER (WHERE NOT p.annule), 0) AS total_paye,
-              d.total_du - COALESCE(SUM(p.montant) FILTER (WHERE NOT p.annule), 0) AS reste,
+    // Meme regle que la situation de chaque eleve : un mois paye d avance
+    // (juin a l inscription) ne dispense pas des mois deja commences
+    const { rows: an } = await query(
+      `SELECT id, date_debut, date_fin FROM annee_scolaire WHERE active LIMIT 1`
+    );
+    if (!an[0]) return res.json([]);
+    const moisAnnee = moisDeLAnnee(an[0].date_debut, an[0].date_fin);
+
+    const { rows: eleves } = await query(
+      `SELECT e.id, e.matricule, e.prenom, e.nom, c.libelle AS classe, c.niveau_id,
               (SELECT t.telephone FROM tuteur t
                JOIN eleve_tuteur et ON et.tuteur_id = t.id
                WHERE et.eleve_id = e.id ORDER BY et.principal DESC LIMIT 1) AS contact
-       FROM du_par_eleve d
-       JOIN eleve e ON e.id = d.eleve_id
-       LEFT JOIN inscription i ON i.eleve_id = e.id
-         AND i.annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)
-       LEFT JOIN classe c ON c.id = i.classe_id
-       LEFT JOIN paiement p ON p.eleve_id = e.id
-         AND p.annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)
-       GROUP BY e.id, e.matricule, e.prenom, e.nom, c.libelle, d.total_du
-       HAVING d.total_du - COALESCE(SUM(p.montant) FILTER (WHERE NOT p.annule), 0) > 0
-       ORDER BY reste DESC`,
-      [JSON.stringify(await exigiblesParFrais())]
+       FROM eleve e
+       JOIN inscription i ON i.eleve_id = e.id AND i.annee_id = $1
+       JOIN classe c ON c.id = i.classe_id
+       WHERE e.statut = 'actif'`,
+      [an[0].id]
     );
-    res.json(rows);
+    const { rows: frais } = await query(
+      `SELECT id, niveau_id, montant, recurrent, mois_fin FROM frais
+       WHERE annee_id = $1 AND obligatoire AND montant > 0`,
+      [an[0].id]
+    );
+    const { rows: versements } = await query(
+      `SELECT eleve_id, frais_id, montant, mois_couvert AS mois FROM paiement
+       WHERE annee_id = $1 AND NOT annule AND frais_id IS NOT NULL ORDER BY id`,
+      [an[0].id]
+    );
+    const parCle = new Map();
+    for (const v of versements) {
+      const cle = `${v.eleve_id}:${v.frais_id}`;
+      if (!parCle.has(cle)) parCle.set(cle, []);
+      parCle.get(cle).push(v);
+    }
+
+    const impayes = [];
+    for (const e of eleves) {
+      let du = 0, paye = 0, reste = 0;
+      for (const f of frais.filter((x) => !x.niveau_id || x.niveau_id === e.niveau_id)) {
+        const vs = parCle.get(`${e.id}:${f.id}`) || [];
+        const verse = vs.reduce((t, v) => t + Number(v.montant), 0);
+        paye += verse;
+        if (f.recurrent) {
+          const mois = moisDuFrais(moisAnnee, f.mois_fin);
+          du += Number(f.montant) * nbMoisExigibles(mois);
+          reste += resteExigible(etatDesMois(mois, f.montant, vs));
+        } else {
+          du += Number(f.montant);
+          reste += Math.max(Number(f.montant) - verse, 0);
+        }
+      }
+      if (reste > 0) {
+        const { niveau_id: _n, ...ligne } = e;
+        impayes.push({ ...ligne, total_du: du, total_paye: paye, reste });
+      }
+    }
+    impayes.sort((a, b) => b.reste - a.reste);
+    res.json(impayes);
   } catch (err) { next(err); }
 });
 

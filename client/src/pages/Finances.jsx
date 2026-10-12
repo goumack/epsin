@@ -305,6 +305,9 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
         montant: String(Math.round(l.recurrent ? l.montant : (Number(l.reste) || l.montant))),
         libre: false,
         nbMois: preselectionner ? 1 : Math.max(echus, 1),
+        // A l inscription, le mois paye est le dernier de l annee (juin, ou
+        // juillet en classe d examen), pas le mois en cours
+        dernier: preselectionner && Boolean(mensuel),
       };
     }
     setChoix(initial);
@@ -338,7 +341,9 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
   const lignes = (situation?.lignes || []).map((l) => {
     const c = choix[l.id] || {};
     const mensuel = echeancier.find((x) => x.id === l.id);
-    const aRegler = mensuel ? mensuel.mois.filter((m) => m.statut !== 'paye') : [];
+    const nonRegles = mensuel ? mensuel.mois.filter((m) => m.statut !== 'paye') : [];
+    // Dernier mois d abord quand on paie celui de l inscription
+    const aRegler = c.dernier && nonRegles.length ? [nonRegles.at(-1), ...nonRegles.slice(0, -1)] : nonRegles;
     const nb = Math.min(Math.max(c.nbMois || 1, 1), aRegler.length || 1);
     const montant = mensuel && !c.libre
       ? aRegler.slice(0, nb).reduce((s, m) => s + Number(m.reste_du), 0)
@@ -361,7 +366,7 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
         reference: reference || null,
         elements: cochees.map((x) => (x.mensuel && !x.c.libre
           // Mois complets : le serveur calcule lui-meme le montant
-          ? { frais_id: x.l.id, nb_mois: x.nb }
+          ? { frais_id: x.l.id, nb_mois: x.nb, dernier_mois: Boolean(x.c.dernier) }
           : { frais_id: x.l.id, montant: x.montant })),
       });
       onCree(cree);
@@ -484,6 +489,16 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
                             </ul>
                           </>
                         ) : (
+                          c.dernier ? (
+                            <p className="text-sm">
+                              Mois de l'inscription : <strong className="capitalize">{libelleMois(aRegler[0].mois)}</strong>
+                              {' '}({fcfa(aRegler[0].reste_du)})
+                              <button type="button" className="ml-2 text-xs text-marine-600 underline"
+                                      onClick={() => maj(l.id, 'dernier', false)}>
+                                payer plutôt les mois en cours
+                              </button>
+                            </p>
+                          ) : (
                           <select className="champ py-1 text-sm" value={nb}
                                   aria-label={`Mois à régler — ${l.libelle}`}
                                   onChange={(e) => maj(l.id, 'nbMois', Number(e.target.value))}>
@@ -494,6 +509,7 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
                               </option>
                             ))}
                           </select>
+                          )
                         )}
                       </div>
                     )}
@@ -975,7 +991,8 @@ const FICHE_2026 = [
     '6eme': 1000, '5eme': 1000, '4eme': 1000, '3eme': 1000 } },
   { libelle: 'Visite médicale', recurrent: false, montants: {
     '6eme': 500, '5eme': 500, '4eme': 500, '3eme': 500 } },
-  { libelle: 'Mensualité', recurrent: true, mois_fin: 6, montants: {
+  // Jusqu a juin, sauf la 3eme, classe d examen du BFEM : jusqu a juillet
+  { libelle: 'Mensualité', recurrent: true, mois_fin: 6, fins: { '3eme': 7 }, montants: {
     CI: 10000, CP: 10000, CE1: 11000, CE2: 11000, CM1: 12000, CM2: 12000,
     '6eme': 12500, '5eme': 12500, '4eme': 13500, '3eme': 13500 } },
 ];
@@ -995,13 +1012,22 @@ function GrilleBareme() {
   /** Colonnes du serveur -> etat editable : montants en texte par niveau. */
   const editer = (b) => {
     setBareme(b);
-    setColonnes(b.colonnes.map((c) => ({
-      libelle: c.libelle, recurrent: c.recurrent, obligatoire: c.obligatoire,
-      mois_fin: c.mois_fin || '',
-      montants: Object.fromEntries(Object.entries(c.montants).map(([n, v]) => [n, String(v.montant)])),
-      // Libelle d origine : sert a vider l ancienne colonne si on la renomme
-      origine: c.libelle,
-    })));
+    setColonnes(b.colonnes.map((c) => {
+      // Dernier mois de la colonne : le plus frequent parmi ses classes ; les
+      // classes qui s en ecartent (3eme : juillet) le gardent en propre
+      const freq = {};
+      for (const v of Object.values(c.montants)) if (v.mois_fin) freq[v.mois_fin] = (freq[v.mois_fin] || 0) + 1;
+      const finColonne = Number(Object.entries(freq).sort((a, b) => b[1] - a[1])[0]?.[0]) || '';
+      return {
+        libelle: c.libelle, recurrent: c.recurrent, obligatoire: c.obligatoire,
+        mois_fin: finColonne,
+        fins: Object.fromEntries(Object.entries(c.montants)
+          .filter(([, v]) => v.mois_fin && v.mois_fin !== finColonne).map(([n, v]) => [n, String(v.mois_fin)])),
+        montants: Object.fromEntries(Object.entries(c.montants).map(([n, v]) => [n, String(v.montant)])),
+        // Libelle d origine : sert a vider l ancienne colonne si on la renomme
+        origine: c.libelle,
+      };
+    }));
     setModifie(false);
   };
 
@@ -1014,6 +1040,11 @@ function GrilleBareme() {
 
   const changer = (i, champ, valeur) => {
     setColonnes((cs) => cs.map((c, j) => (j === i ? { ...c, [champ]: valeur } : c)));
+    setModifie(true);
+  };
+  const changerFin = (i, niveauId, valeur) => {
+    setColonnes((cs) => cs.map((c, j) => (j === i
+      ? { ...c, fins: { ...(c.fins || {}), [niveauId]: valeur } } : c)));
     setModifie(true);
   };
   const changerMontant = (i, niveauId, valeur) => {
@@ -1037,6 +1068,8 @@ function GrilleBareme() {
     const parLibelle = (l) => bareme.niveaux.find((n) => n.libelle === l)?.id;
     const nouvelles = FICHE_2026.map((m) => ({
       libelle: m.libelle, recurrent: m.recurrent, obligatoire: true, mois_fin: m.mois_fin || '',
+      fins: Object.fromEntries(Object.entries(m.fins || {})
+        .map(([l, v]) => [parLibelle(l), String(v)]).filter(([id]) => id)),
       montants: Object.fromEntries(Object.entries(m.montants)
         .map(([l, v]) => [parLibelle(l), String(v)]).filter(([id]) => id)),
     }));
@@ -1060,7 +1093,8 @@ function GrilleBareme() {
         const montants = {};
         for (const n of bareme.niveaux) {
           const v = c.retiree ? '' : (c.montants[n.id] ?? '');
-          montants[n.id] = v === '' ? null : Number(v);
+          const fin = c.recurrent ? Number(c.fins?.[n.id] || c.mois_fin) || null : null;
+          montants[n.id] = v === '' ? null : { montant: Number(v), mois_fin: fin };
         }
         if (!c.retiree && c.libelle.trim()) {
           envoyees.push({ libelle: c.libelle.trim(), recurrent: c.recurrent, obligatoire: c.obligatoire,
@@ -1188,6 +1222,16 @@ function GrilleBareme() {
                                  aria-label={`${c.libelle || 'Frais'} — ${n.libelle}`}
                                  value={c.montants[n.id] ?? ''}
                                  onChange={(e) => changerMontant(c.i, n.id, e.target.value)} />
+                          {/* Mensuel : dernier mois du de cette classe (juillet en 3eme) */}
+                          {c.recurrent && (c.montants[n.id] ?? '') !== '' && (
+                            <select className="mt-0.5 w-full rounded border-0 bg-transparent p-0 text-right text-[11px] text-slate-500"
+                                    aria-label={`Dernier mois dû — ${n.libelle}`}
+                                    value={c.fins?.[n.id] || c.mois_fin || ''}
+                                    onChange={(e) => changerFin(c.i, n.id, e.target.value)}>
+                              <option value="">jusqu'à la fin</option>
+                              {NOMS_MOIS.map((m, k) => <option key={m} value={k + 1}>jusqu'à {m}</option>)}
+                            </select>
+                          )}
                         </td>
                       ))}
                     </tr>

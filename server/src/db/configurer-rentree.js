@@ -50,7 +50,8 @@ const BAREME = [
   { libelle: 'Uniforme', montants: { '6eme': 10000, '5eme': 10000, '4eme': 10000, '3eme': 10000 } },
   { libelle: 'Fosco', montants: { '6eme': 1000, '5eme': 1000, '4eme': 1000, '3eme': 1000 } },
   { libelle: 'Visite médicale', montants: { '6eme': 500, '5eme': 500, '4eme': 500, '3eme': 500 } },
-  { libelle: 'Mensualité', recurrent: true, mois_fin: 6, montants: {
+  // Jusqu a juin, sauf la 3eme (classe d examen du BFEM) : jusqu a juillet
+  { libelle: 'Mensualité', recurrent: true, mois_fin: 6, fins: { '3eme': 7 }, montants: {
     CI: 10000, CP: 10000, CE1: 11000, CE2: 11000, CM1: 12000, CM2: 12000,
     '6eme': 12500, '5eme': 12500, '4eme': 13500, '3eme': 13500 } },
 ];
@@ -108,7 +109,7 @@ async function configurer() {
     console.log(`Serveur : ${hote}`);
     console.log(`Classes : ${CLASSES.map(([, c]) => c).join(', ')}`);
     console.log(`Frais   : ${BAREME.map((b) => b.libelle).join(', ')}`);
-    console.log('Mensualites dues d octobre a juin (9 mois).');
+    console.log('Mensualites dues d octobre a juin (9 mois), juillet en 3eme (BFEM).');
 
     let reponse = process.env.CONFIRMATION;
     if (reponse === undefined && process.stdin.isTTY) {
@@ -153,14 +154,14 @@ async function configurer() {
           await client.query(
             `UPDATE frais SET libelle = $2, montant = $3, recurrent = $4, obligatoire = true, mois_fin = $5
              WHERE id = $1`,
-            [existant.id, b.libelle, montant, Boolean(b.recurrent), b.mois_fin || null]
+            [existant.id, b.libelle, montant, Boolean(b.recurrent), b.fins?.[libelleNiveau] || b.mois_fin || null]
           );
           fraisMisAJour++;
         } else {
           await client.query(
             `INSERT INTO frais (annee_id, niveau_id, libelle, montant, recurrent, obligatoire, mois_fin)
              VALUES ($1,$2,$3,$4,$5,true,$6)`,
-            [anneeId, niveauId, b.libelle, montant, Boolean(b.recurrent), b.mois_fin || null]
+            [anneeId, niveauId, b.libelle, montant, Boolean(b.recurrent), b.fins?.[libelleNiveau] || b.mois_fin || null]
           );
           fraisCrees++;
         }

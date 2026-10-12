@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { Printer, X } from 'lucide-react';
 import { get, fcfa, dateFr } from '../lib/api';
 import { Chargement, Erreur } from '../components/ui';
+import { libelleMois } from '../components/PaiementWave';
 
 /**
  * Fiche d inscription imprimable : identite de l eleve, classe, tuteurs,
@@ -49,9 +50,13 @@ export default function FicheInscription() {
     ...ponctuels.map((l) => ({
       id: l.id, libelle: l.libelle, du: Number(l.montant), paye: Math.min(Number(l.paye), Number(l.montant)),
     })),
-    ...(mensualite ? [{
-      id: mensualite.id, libelle: `${mensualite.libelle} (1er mois)`,
-      du: Number(mensualite.montant), paye: Math.min(Number(mensualite.paye), Number(mensualite.montant)),
+    // Le mois paye a l inscription est le dernier de l annee (juin, ou
+    // juillet en classe d examen)
+    ...(mensualite?.etat?.length ? [{
+      id: mensualite.id,
+      libelle: `${mensualite.libelle} (${libelleMois(mensualite.etat.at(-1).mois)})`,
+      du: Number(mensualite.montant),
+      paye: Number(mensualite.etat.at(-1).verse),
     }] : []),
   ];
   const totalInscription = inscription.reduce((s, l) => s + l.du, 0);

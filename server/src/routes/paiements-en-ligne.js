@@ -4,7 +4,7 @@ import { authentifier, autoriser, tracer } from '../middleware/auth.js';
 import { eleveSuivi, estTuteur } from '../middleware/portee-tuteur.js';
 import { prochainNumeroRecu } from '../db/recus.js';
 import {
-  moisDeLAnnee, moisDuFrais, moisCourant, etatDesMois, montantPourMois, repartirVersement,
+  moisDeLAnnee, moisDuFrais, moisCourant, etatDesMois, montantPourMois, ventilerVersement,
 } from '../metier/mensualites.js';
 import {
   waveConfigure, modePaiement, lienAvecMontant,
@@ -68,18 +68,29 @@ async function mensualitesDe(eleveId, anneeId = null, db = { query }) {
     [eleveId, an[0].id, insc[0].niveau_id]
   );
 
+  // Versements mois par mois : le mois paye a l inscription (le dernier de
+  // l annee) est deja regle, octobre reste du
+  const { rows: versements } = await db.query(
+    `SELECT frais_id, montant, mois_couvert AS mois FROM paiement
+     WHERE eleve_id = $1 AND annee_id = $2 AND NOT annule ORDER BY id`,
+    [eleveId, an[0].id]
+  );
+
   const mois = moisDeLAnnee(an[0].date_debut, an[0].date_fin);
   return {
     annee: an[0],
     mois,
-    frais: frais.map((f) => ({
-      ...f,
-      paye: Number(f.paye),
-      montant: Number(f.montant),
+    frais: frais.map((f) => {
       // « D octobre a juin » : chaque frais s arrete a son dernier mois du
-      listeMois: moisDuFrais(mois, f.mois_fin),
-      mois: etatDesMois(moisDuFrais(mois, f.mois_fin), f.montant, f.paye),
-    })),
+      const listeMois = moisDuFrais(mois, f.mois_fin);
+      return {
+        ...f,
+        paye: Number(f.paye),
+        montant: Number(f.montant),
+        listeMois,
+        mois: etatDesMois(listeMois, f.montant, versements.filter((v) => v.frais_id === f.id)),
+      };
+    }),
   };
 }
 
@@ -114,7 +125,7 @@ export async function confirmerPaiement(id, {
     // Le frais a pu etre retire entre-temps : l argent est quand meme recu,
     // on l impute sans mois plutot que de le perdre.
     const lignes = f
-      ? repartirVersement(f.listeMois, f.montant, f.paye, versement)
+      ? ventilerVersement(f.mois, versement)
       : [{ mois: null, montant: versement }];
 
     const recus = [];
@@ -269,7 +280,7 @@ router.post('/wave', autoriser('parent'), async (req, res, next) => {
     }
 
     const fraisId = Number(req.body.frais_id);
-    const { annee, mois, frais } = await mensualitesDe(eleveId);
+    const { annee, frais } = await mensualitesDe(eleveId);
     const f = frais.find((x) => x.id === fraisId);
     if (!f) return res.status(404).json({ erreur: 'Mensualite introuvable pour cet eleve' });
 
@@ -292,7 +303,7 @@ router.post('/wave', autoriser('parent'), async (req, res, next) => {
         });
       }
       montant = montantLibre;
-      nbMois = repartirVersement(mois, f.montant, f.paye, montant).filter((l) => l.mois).length;
+      nbMois = ventilerVersement(f.mois, montant).filter((l) => l.mois).length;
     } else {
       nbMois = Number(req.body.nb_mois);
       if (!Number.isInteger(nbMois) || nbMois < 1 || nbMois > MAX_MOIS) {
