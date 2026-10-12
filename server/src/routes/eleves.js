@@ -268,26 +268,117 @@ router.post('/', autoriser(...GESTION, 'comptable'), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.put('/:id', autoriser(...GESTION), async (req, res, next) => {
+/**
+ * Correction de l identite d un eleve (erreur de saisie a l inscription).
+ * Ouvert au comptable, qui inscrit. Le statut (actif, archive...) n est pas
+ * modifiable ici : il suit les decisions de fin d annee ou l archivage.
+ */
+router.put('/:id', autoriser(...GESTION, 'comptable'), async (req, res, next) => {
   try {
     const parsed = schemaEleve.partial().safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ erreur: parsed.error.issues[0].message });
     }
+    if (!accesAutorise(req.user, await entiteEleve(req.params.id))) {
+      return res.status(403).json({ erreur: "Cet élève ne relève pas de votre entité" });
+    }
     const champs = ['prenom', 'nom', 'sexe', 'date_naissance', 'lieu_naissance',
-                    'nationalite', 'adresse', 'statut'];
+                    'nationalite', 'adresse'];
     const maj = champs.filter((c) => req.body[c] !== undefined);
     if (!maj.length) return res.status(400).json({ erreur: 'Aucun champ a modifier' });
+    // Prenom et nom sont obligatoires : un champ vide est refuse, pas efface
+    for (const c of ['prenom', 'nom']) {
+      if (maj.includes(c) && !String(req.body[c] || '').trim()) {
+        return res.status(400).json({ erreur: 'Le prenom et le nom sont obligatoires' });
+      }
+    }
 
     const set = maj.map((c, i) => `${c} = $${i + 2}`).join(', ');
     const { rows } = await query(
       `UPDATE eleve SET ${set} WHERE id = $1 RETURNING *`,
-      [req.params.id, ...maj.map((c) => req.body[c] || null)]
+      [req.params.id, ...maj.map((c) => (typeof req.body[c] === 'string'
+        ? req.body[c].trim() || null : req.body[c] ?? null))]
     );
     if (!rows[0]) return res.status(404).json({ erreur: 'Eleve introuvable' });
 
     await tracer(req, 'modification', 'eleve', rows[0].id);
     res.json(rows[0]);
+  } catch (err) { next(err); }
+});
+
+/**
+ * Corrige les tuteurs d un eleve : la liste envoyee remplace l actuelle.
+ * Un tuteur existant garde son id (ses coordonnees sont mises a jour) ; un
+ * tuteur retire est detache, et supprime s il ne suit plus aucun eleve.
+ */
+router.put('/:id/tuteurs', autoriser(...GESTION, 'comptable'), async (req, res, next) => {
+  try {
+    const tuteurs = Array.isArray(req.body.tuteurs) ? req.body.tuteurs : null;
+    if (!tuteurs) return res.status(400).json({ erreur: 'Liste de tuteurs attendue' });
+    for (const t of tuteurs) {
+      if (!String(t.nom || '').trim() || !String(t.telephone || '').trim()) {
+        return res.status(400).json({ erreur: 'Chaque tuteur doit avoir un nom et un telephone' });
+      }
+    }
+    const { rows: el } = await query(`SELECT id FROM eleve WHERE id = $1`, [req.params.id]);
+    if (!el[0]) return res.status(404).json({ erreur: 'Eleve introuvable' });
+    if (!accesAutorise(req.user, await entiteEleve(req.params.id))) {
+      return res.status(403).json({ erreur: "Cet élève ne relève pas de votre entité" });
+    }
+    // Un seul tuteur principal : le premier coche, sinon le premier de la liste
+    const indexPrincipal = Math.max(tuteurs.findIndex((t) => t.principal), 0);
+
+    await transaction(async (client) => {
+      const { rows: actuels } = await client.query(
+        `SELECT tuteur_id FROM eleve_tuteur WHERE eleve_id = $1`, [req.params.id]
+      );
+      const gardes = new Set();
+      for (const [i, t] of tuteurs.entries()) {
+        const valeurs = [String(t.prenom || '').trim() || String(t.nom).trim(), String(t.nom).trim(),
+          String(t.telephone).trim(), t.email?.trim() || null, t.profession?.trim() || null];
+        const lien = String(t.lien || 'tuteur').trim();
+        const principal = i === indexPrincipal;
+        const existant = actuels.find((a) => a.tuteur_id === Number(t.id));
+        if (existant) {
+          await client.query(
+            `UPDATE tuteur SET prenom = $2, nom = $3, telephone = $4, email = $5, profession = $6
+             WHERE id = $1`, [existant.tuteur_id, ...valeurs]
+          );
+          await client.query(
+            `UPDATE eleve_tuteur SET lien = $3, principal = $4 WHERE eleve_id = $1 AND tuteur_id = $2`,
+            [req.params.id, existant.tuteur_id, lien, principal]
+          );
+          gardes.add(existant.tuteur_id);
+        } else {
+          const { rows } = await client.query(
+            `INSERT INTO tuteur (prenom, nom, telephone, email, profession)
+             VALUES ($1,$2,$3,$4,$5) RETURNING id`, valeurs
+          );
+          await client.query(
+            `INSERT INTO eleve_tuteur (eleve_id, tuteur_id, lien, principal) VALUES ($1,$2,$3,$4)`,
+            [req.params.id, rows[0].id, lien, principal]
+          );
+          gardes.add(rows[0].id);
+        }
+      }
+      for (const a of actuels) {
+        if (gardes.has(a.tuteur_id)) continue;
+        await client.query(`DELETE FROM eleve_tuteur WHERE eleve_id = $1 AND tuteur_id = $2`,
+          [req.params.id, a.tuteur_id]);
+        await client.query(
+          `DELETE FROM tuteur WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM eleve_tuteur WHERE tuteur_id = $1)`,
+          [a.tuteur_id]
+        );
+      }
+    });
+
+    await tracer(req, 'modification_tuteurs', 'eleve', Number(req.params.id), { nombre: tuteurs.length });
+    const { rows } = await query(
+      `SELECT t.*, et.lien, et.principal FROM tuteur t
+       JOIN eleve_tuteur et ON et.tuteur_id = t.id WHERE et.eleve_id = $1`,
+      [req.params.id]
+    );
+    res.json(rows);
   } catch (err) { next(err); }
 });
 
@@ -363,16 +454,73 @@ router.post('/:id/compte-parent', autoriser(...GESTION, 'comptable'), async (req
   } catch (err) { next(err); }
 });
 
-// Suppression logique : on conserve l historique scolaire
+/**
+ * Suppression d un eleve, reservee a l administrateur.
+ *
+ * Par defaut : ARCHIVAGE. L eleve sort de l effectif et des listes, mais
+ * son dossier, ses notes et ses paiements sont conserves.
+ *
+ * `?definitif=1` : suppression DEFINITIVE, pour une inscription faite par
+ * erreur. Refusee des qu il existe un paiement ou une note : en base, la
+ * suppression emporterait ces ecritures (cascade). Il faut alors archiver.
+ */
 router.delete('/:id', autoriser('admin'), async (req, res, next) => {
   try {
+    const { rows: el } = await query(
+      `SELECT id, matricule, prenom, nom FROM eleve WHERE id = $1`, [req.params.id]
+    );
+    if (!el[0]) return res.status(404).json({ erreur: 'Eleve introuvable' });
+
+    if (req.query.definitif === '1') {
+      const { rows: traces } = await query(
+        `SELECT (SELECT COUNT(*)::int FROM paiement WHERE eleve_id = $1)
+               + (SELECT COUNT(*)::int FROM paiement_en_ligne WHERE eleve_id = $1) AS paiements,
+                (SELECT COUNT(*)::int FROM note WHERE eleve_id = $1) AS notes`,
+        [req.params.id]
+      );
+      if (traces[0].paiements || traces[0].notes) {
+        return res.status(409).json({
+          erreur: `Suppression definitive impossible : ${traces[0].paiements} paiement(s) et `
+            + `${traces[0].notes} note(s) seraient perdus. Retirez plutot l eleve de l effectif (archivage).`,
+        });
+      }
+      await transaction(async (client) => {
+        const { rows: tuteurs } = await client.query(
+          `SELECT tuteur_id FROM eleve_tuteur WHERE eleve_id = $1`, [req.params.id]
+        );
+        // Le compte parent part avec l eleve (ON DELETE CASCADE)
+        await client.query(`DELETE FROM eleve WHERE id = $1`, [req.params.id]);
+        for (const t of tuteurs) {
+          await client.query(
+            `DELETE FROM tuteur WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM eleve_tuteur WHERE tuteur_id = $1)`,
+            [t.tuteur_id]
+          );
+        }
+      });
+      await tracer(req, 'suppression_definitive', 'eleve', el[0].id,
+        { matricule: el[0].matricule, nom: `${el[0].prenom} ${el[0].nom}` });
+      return res.json({ message: 'Eleve supprime definitivement' });
+    }
+
+    await query(`UPDATE eleve SET statut = 'archive' WHERE id = $1`, [req.params.id]);
+    // Son compte parent est desactive : il n a plus a consulter le portail
+    await query(`UPDATE utilisateur SET actif = false WHERE eleve_suivi_id = $1`, [req.params.id]);
+    await tracer(req, 'archivage', 'eleve', el[0].id);
+    res.json({ message: 'Eleve retire de l effectif (archive)' });
+  } catch (err) { next(err); }
+});
+
+/** Remet dans l effectif un eleve archive par erreur. */
+router.patch('/:id/restaurer', autoriser('admin'), async (req, res, next) => {
+  try {
     const { rows } = await query(
-      `UPDATE eleve SET statut = 'archive' WHERE id = $1 RETURNING id`,
+      `UPDATE eleve SET statut = 'actif' WHERE id = $1 AND statut = 'archive' RETURNING id`,
       [req.params.id]
     );
-    if (!rows[0]) return res.status(404).json({ erreur: 'Eleve introuvable' });
-    await tracer(req, 'archivage', 'eleve', rows[0].id);
-    res.json({ message: 'Eleve archive' });
+    if (!rows[0]) return res.status(404).json({ erreur: 'Eleve introuvable ou non archive' });
+    await query(`UPDATE utilisateur SET actif = true WHERE eleve_suivi_id = $1`, [req.params.id]);
+    await tracer(req, 'restauration', 'eleve', rows[0].id);
+    res.json({ message: 'Eleve remis dans l effectif' });
   } catch (err) { next(err); }
 });
 

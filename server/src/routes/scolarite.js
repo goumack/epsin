@@ -335,13 +335,80 @@ router.patch('/classes/:id/professeur-principal', autoriser(...GESTION), async (
   } catch (err) { next(err); }
 });
 
+/**
+ * Correction d une classe : nom, niveau, capacite, salle. Changer de niveau
+ * (classe creee sur le mauvais niveau) est refuse des que des evaluations
+ * existent : elles portent sur les matieres de l ancien niveau. Les
+ * affectations de matieres et le maitre de l ancien niveau sont retires.
+ */
+router.patch('/classes/:id', autoriser(...GESTION), async (req, res, next) => {
+  try {
+    const controle = await verifierClasse(req, req.params.id);
+    if (!controle.ok) return res.status(controle.code).json({ erreur: controle.message });
+    const { rows: cl } = await query(`SELECT * FROM classe WHERE id = $1`, [req.params.id]);
+
+    const libelle = req.body.libelle !== undefined ? String(req.body.libelle).trim() : cl[0].libelle;
+    if (!libelle) return res.status(400).json({ erreur: 'Le nom de la classe est obligatoire' });
+    const capacite = req.body.capacite !== undefined && req.body.capacite !== ''
+      ? Number(req.body.capacite) : cl[0].capacite;
+    if (!(capacite > 0)) return res.status(400).json({ erreur: 'Capacite invalide' });
+    const salle = req.body.salle !== undefined ? (String(req.body.salle).trim() || null) : cl[0].salle;
+    const niveauId = req.body.niveau_id ? Number(req.body.niveau_id) : cl[0].niveau_id;
+
+    const changeNiveau = niveauId !== cl[0].niveau_id;
+    if (changeNiveau) {
+      const controleNiveau = await verifierNiveau(req, niveauId);
+      if (!controleNiveau.ok) return res.status(controleNiveau.code).json({ erreur: controleNiveau.message });
+      const { rows: ev } = await query(
+        `SELECT COUNT(*)::int AS n FROM evaluation WHERE classe_id = $1`, [req.params.id]
+      );
+      if (ev[0].n > 0) {
+        return res.status(400).json({
+          erreur: `Niveau non modifiable : ${ev[0].n} evaluation(s) existent deja pour cette classe`,
+        });
+      }
+    }
+
+    try {
+      await transaction(async (client) => {
+        await client.query(
+          `UPDATE classe SET libelle = $2, capacite = $3, salle = $4, niveau_id = $5 WHERE id = $1`,
+          [req.params.id, libelle, capacite, salle, niveauId]
+        );
+        if (changeNiveau) {
+          // Matieres et maitre de l ancien niveau n ont plus de sens
+          await client.query(`DELETE FROM affectation WHERE classe_id = $1`, [req.params.id]);
+          await client.query(`DELETE FROM classe_maitre WHERE classe_id = $1`, [req.params.id]);
+          await client.query(`UPDATE classe SET prof_principal_id = NULL WHERE id = $1`, [req.params.id]);
+        }
+      });
+    } catch (err) {
+      if (err.code === '23505') {
+        return res.status(409).json({ erreur: `Une classe « ${libelle} » existe deja cette annee` });
+      }
+      throw err;
+    }
+    await tracer(req, 'modification_classe', 'classe', Number(req.params.id),
+      { libelle, niveau_id: niveauId, changeNiveau });
+    res.json({ message: 'Classe modifiee', niveau_modifie: changeNiveau });
+  } catch (err) { next(err); }
+});
+
 router.delete('/classes/:id', autoriser('admin'), async (req, res, next) => {
   try {
     const { rows: eff } = await query(
       `SELECT COUNT(*)::int AS n FROM inscription WHERE classe_id = $1`, [req.params.id]
     );
     if (eff[0].n > 0) {
-      return res.status(400).json({ erreur: `Impossible : ${eff[0].n} eleve(s) inscrit(s) dans cette classe` });
+      return res.status(400).json({
+        erreur: `Suppression impossible : ${eff[0].n} eleve(s) inscrit(s). Changez-les d abord de classe.`,
+      });
+    }
+    const { rows: ev } = await query(
+      `SELECT COUNT(*)::int AS n FROM evaluation WHERE classe_id = $1`, [req.params.id]
+    );
+    if (ev[0].n > 0) {
+      return res.status(400).json({ erreur: `Suppression impossible : ${ev[0].n} evaluation(s) rattachee(s)` });
     }
     await query(`DELETE FROM classe WHERE id = $1`, [req.params.id]);
     await tracer(req, 'suppression', 'classe', Number(req.params.id));

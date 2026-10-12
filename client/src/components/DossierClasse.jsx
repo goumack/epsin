@@ -13,7 +13,11 @@ const JOURS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi'];
  * Dossier complet d une classe : identite, effectif, eleves,
  * equipe pedagogique, emploi du temps et resultats.
  */
-export default function DossierClasse({ classeId, onFermer }) {
+export default function DossierClasse({ classeId, onFermer, onChange }) {
+  const { aRole } = useAuth();
+  const peutModifier = aRole('admin', 'censeur', 'directeur', 'proviseur');
+  const peutSupprimer = aRole('admin');
+  const [modification, setModification] = useState(false);
   const [onglet, setOnglet] = useState('infos');
   const [classe, setClasse] = useState(null);
   const [erreur, setErreur] = useState('');
@@ -52,6 +56,33 @@ export default function DossierClasse({ classeId, onFermer }) {
         {!classe ? <Chargement /> : (
           <div className="space-y-4">
             <EnTete classe={classe} />
+
+            {(peutModifier || peutSupprimer) && (
+              <div className="flex flex-wrap justify-end gap-2 print:hidden">
+                {peutModifier && (
+                  <button type="button" className="bouton-secondaire px-3 py-1.5" onClick={() => setModification(true)}>
+                    Modifier la classe
+                  </button>
+                )}
+                {peutSupprimer && (
+                  <button type="button" className="bouton-danger px-3 py-1.5"
+                          onClick={async () => {
+                            if (!window.confirm(`Supprimer la classe ${classe.libelle} ? Possible seulement si elle n'a aucun élève ni évaluation.`)) return;
+                            try {
+                              await supprimer(`/scolarite/classes/${classe.id}`);
+                              onChange?.();
+                              onFermer();
+                            } catch (e) { setErreur(e.message); }
+                          }}>
+                    Supprimer la classe
+                  </button>
+                )}
+              </div>
+            )}
+            <ModifierClasse
+              classe={classe} ouvert={modification} onFermer={() => setModification(false)}
+              onModifie={() => { setModification(false); recharger(); onChange?.(); }}
+            />
 
             <div className="print:hidden">
               <Onglets onglets={onglets} actif={onglet} onChange={setOnglet} />
@@ -105,6 +136,87 @@ function EnTete({ classe }) {
         />
       </div>
     </div>
+  );
+}
+
+/**
+ * Correction d une classe : nom, niveau, capacite, salle. Changer le niveau
+ * (classe creee sur le mauvais niveau) retire les affectations de matieres
+ * et le maitre de l ancien niveau ; le serveur le refuse si des evaluations
+ * existent deja.
+ */
+function ModifierClasse({ classe, ouvert, onFermer, onModifie }) {
+  const [niveaux, setNiveaux] = useState([]);
+  const [f, setF] = useState({});
+  const [envoi, setEnvoi] = useState(false);
+  const [erreur, setErreur] = useState('');
+
+  useEffect(() => {
+    if (!ouvert) return;
+    setErreur('');
+    setF({ libelle: classe.libelle, niveau_id: String(classe.niveau_id), capacite: String(classe.capacite), salle: classe.salle || '' });
+    get('/scolarite/niveaux').then(setNiveaux).catch(() => setNiveaux([]));
+  }, [ouvert, classe]);
+
+  const maj = (c) => (e) => setF((v) => ({ ...v, [c]: e.target.value }));
+  const changeNiveau = f.niveau_id && f.niveau_id !== String(classe.niveau_id);
+
+  const enregistrer = async (e) => {
+    e.preventDefault();
+    if (changeNiveau && !window.confirm(
+      'Changer le niveau retire les professeurs affectés aux matières de cette classe. Continuer ?'
+    )) return;
+    setEnvoi(true);
+    setErreur('');
+    try {
+      await patch(`/scolarite/classes/${classe.id}`, {
+        libelle: f.libelle, niveau_id: Number(f.niveau_id), capacite: Number(f.capacite), salle: f.salle,
+      });
+      onModifie();
+    } catch (err) {
+      setErreur(err.message);
+    } finally {
+      setEnvoi(false);
+    }
+  };
+
+  return (
+    <Modale ouverte={ouvert} onFermer={onFermer} titre="Modifier la classe" taille="sm">
+      <form onSubmit={enregistrer} className="space-y-3">
+        <div>
+          <label className="etiquette" htmlFor="c-libelle">Nom de la classe *</label>
+          <input id="c-libelle" className="champ" required value={f.libelle || ''} onChange={maj('libelle')} />
+        </div>
+        <div>
+          <label className="etiquette" htmlFor="c-niveau">Niveau *</label>
+          <select id="c-niveau" className="champ" value={f.niveau_id || ''} onChange={maj('niveau_id')}>
+            {niveaux.map((n) => <option key={n.id} value={n.id}>{n.libelle}</option>)}
+          </select>
+          {changeNiveau && (
+            <p className="mt-1 text-xs text-amber-600">
+              Le barème, les matières et le bulletin suivront le nouveau niveau.
+            </p>
+          )}
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="etiquette" htmlFor="c-capacite">Capacité</label>
+            <input id="c-capacite" type="number" min="1" className="champ" value={f.capacite || ''} onChange={maj('capacite')} />
+          </div>
+          <div>
+            <label className="etiquette" htmlFor="c-salle">Salle</label>
+            <input id="c-salle" className="champ" value={f.salle || ''} onChange={maj('salle')} />
+          </div>
+        </div>
+        <Erreur message={erreur} />
+        <div className="flex justify-end gap-2 border-t border-slate-200 dark:border-slate-800 pt-3">
+          <button type="button" className="bouton-secondaire" onClick={onFermer}>Annuler</button>
+          <button type="submit" className="bouton-primaire" disabled={envoi}>
+            {envoi ? 'Enregistrement…' : 'Enregistrer'}
+          </button>
+        </div>
+      </form>
+    </Modale>
   );
 }
 

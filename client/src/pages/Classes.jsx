@@ -177,7 +177,7 @@ function ListeClasses() {
         </div>
       )}
 
-      <DossierClasse classeId={dossier} onFermer={() => setDossier(null)} />
+      <DossierClasse classeId={dossier} onFermer={() => setDossier(null)} onChange={charger} />
 
       <Modale ouverte={ouvert} onFermer={() => setOuvert(false)} titre="Nouvelle classe" taille="sm">
         <form onSubmit={soumettre} className="space-y-3">

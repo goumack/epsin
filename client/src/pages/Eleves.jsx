@@ -16,6 +16,8 @@ export default function Eleves() {
   const [liste, setListe] = useState(null);
   const [recherche, setRecherche] = useState('');
   const [classeId, setClasseId] = useState('');
+  // Les eleves retires de l effectif restent consultables (et restaurables)
+  const [statut, setStatut] = useState('actif');
   const [page, setPage] = useState(1);
   const [classes, setClasses] = useState([]);
   const [erreur, setErreur] = useState('');
@@ -35,11 +37,12 @@ export default function Eleves() {
       const params = new URLSearchParams({ page, taille: TAILLE });
       if (recherche.trim()) params.set('recherche', recherche.trim());
       if (classeId) params.set('classe_id', classeId);
+      params.set('statut', statut);
       setListe(await get(`/eleves?${params}`));
     } catch (e) {
       setErreur(e.message);
     }
-  }, [page, recherche, classeId]);
+  }, [page, recherche, classeId, statut]);
 
   useEffect(() => {
     get('/scolarite/classes').then(setClasses).catch(() => {});
@@ -52,7 +55,7 @@ export default function Eleves() {
   }, [charger, recherche]);
 
   // Toute modification de filtre ramene a la premiere page
-  useEffect(() => { setPage(1); }, [recherche, classeId]);
+  useEffect(() => { setPage(1); }, [recherche, classeId, statut]);
 
   const pages = liste ? Math.max(Math.ceil(liste.total / TAILLE), 1) : 1;
 
@@ -79,6 +82,13 @@ export default function Eleves() {
             <option key={c.id} value={c.id}>{c.libelle}</option>
           ))}
         </select>
+        {aRole('admin') && (
+          <select className="champ sm:w-44" value={statut} aria-label="Élèves affichés"
+                  onChange={(e) => setStatut(e.target.value)}>
+            <option value="actif">Élèves actifs</option>
+            <option value="archive">Retirés de l'effectif</option>
+          </select>
+        )}
         {aRole('admin', 'censeur', 'directeur', 'proviseur', 'comptable') && (
           <button onClick={() => setFormOuvert(true)} className="bouton-primaire sm:ml-auto">
             <Plus className="h-4 w-4" />
@@ -179,7 +189,7 @@ export default function Eleves() {
         onErreur={toastErreur}
       />
 
-      <DossierEleve eleveId={fiche} onFermer={() => setFiche(null)} />
+      <DossierEleve eleveId={fiche} onFermer={() => setFiche(null)} onChange={charger} />
 
       <FicheAcces
         eleve={nouvelInscrit}

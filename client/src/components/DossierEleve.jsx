@@ -2,20 +2,26 @@ import { useEffect, useState, useCallback } from 'react';
 import {
   User, ClipboardList, CalendarX, Wallet, Printer, ShieldAlert, Clock, KeyRound,
 } from 'lucide-react';
-import { get, post, fcfa, dateFr, couleurNote } from '../lib/api';
+import { get, post, patch, fcfa, dateFr, couleurNote } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import { Chargement, Erreur, Vide, Modale, Puce, Onglets } from './ui';
 import BulletinOfficiel from './BulletinOfficiel';
 import ParcoursEleve from './ParcoursEleve';
 import FicheAcces from './FicheAcces';
+import { ModifierEleve, SupprimerEleve } from './CorrectionsEleve';
 import { FormulairePaiement, BandeauRecu } from '../pages/Finances';
 
 /**
  * Dossier complet d un eleve : identite, bulletin, detail des notes,
  * assiduite et situation financiere. Ouvert depuis la liste des eleves.
  */
-export default function DossierEleve({ eleveId, onFermer }) {
+export default function DossierEleve({ eleveId, onFermer, onChange }) {
   const { aRole } = useAuth();
+  // Corrections : la direction et le comptable corrigent, seul l admin supprime
+  const peutModifier = aRole('admin', 'censeur', 'directeur', 'proviseur', 'comptable');
+  const peutSupprimer = aRole('admin');
+  const [modification, setModification] = useState(false);
+  const [suppression, setSuppression] = useState(false);
   const [onglet, setOnglet] = useState('infos');
   const [eleve, setEleve] = useState(null);
   const [periodes, setPeriodes] = useState([]);
@@ -61,7 +67,40 @@ export default function DossierEleve({ eleveId, onFermer }) {
       <Erreur message={erreur} />
       {!eleve ? <Chargement /> : (
         <div className="space-y-4">
-          <EnTete eleve={eleve} />
+            <EnTete eleve={eleve} />
+
+          {(peutModifier || peutSupprimer) && (
+            <div className="flex flex-wrap justify-end gap-2 print:hidden">
+              {peutSupprimer && eleve.statut === 'archive' && (
+                <button type="button" className="bouton-secondaire px-3 py-1.5"
+                        onClick={async () => {
+                          try { await patch(`/eleves/${eleve.id}/restaurer`); recharger(); onChange?.(); }
+                          catch (e) { setErreur(e.message); }
+                        }}>
+                  Remettre dans l'effectif
+                </button>
+              )}
+              {peutModifier && (
+                <button type="button" className="bouton-secondaire px-3 py-1.5" onClick={() => setModification(true)}>
+                  Modifier
+                </button>
+              )}
+              {peutSupprimer && eleve.statut !== 'archive' && (
+                <button type="button" className="bouton-danger px-3 py-1.5" onClick={() => setSuppression(true)}>
+                  Supprimer
+                </button>
+              )}
+            </div>
+          )}
+          <ModifierEleve
+            eleve={eleve} ouvert={modification} onFermer={() => setModification(false)}
+            onModifie={() => { setModification(false); recharger(); onChange?.(); }}
+          />
+          <SupprimerEleve
+            eleve={eleve} ouvert={suppression} onFermer={() => setSuppression(false)}
+            onArchive={() => { setSuppression(false); recharger(); onChange?.(); }}
+            onSupprime={() => { setSuppression(false); onChange?.(); onFermer(); }}
+          />
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center print:hidden">
             <div className="flex-1 overflow-x-auto">
