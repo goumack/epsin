@@ -395,53 +395,64 @@ router.get('/situation/:eleveId', async (req, res, next) => {
       return res.status(controleTuteur.code).json({ erreur: controleTuteur.message });
     }
 
-    const { rows: info } = await query(
-      `SELECT e.id, e.matricule, e.prenom, e.nom, c.libelle AS classe, c.niveau_id,
-              (SELECT libelle FROM annee_scolaire WHERE active LIMIT 1) AS annee
-       FROM eleve e
-       LEFT JOIN inscription i ON i.eleve_id = e.id
-         AND i.annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)
-       LEFT JOIN classe c ON c.id = i.classe_id
-       WHERE e.id = $1`,
-      [req.params.eleveId]
-    );
-    if (!info[0]) return res.status(404).json({ erreur: 'Eleve introuvable' });
-
-    const { rows: frais } = await query(
-      `SELECT f.*,
-              COALESCE((SELECT SUM(p.montant) FROM paiement p
-                        -- Seuls les versements de CETTE annee : un paiement
-                        -- d une annee passee ne regle pas la scolarite en cours
-                        WHERE p.eleve_id = $1 AND p.frais_id = f.id
-                          AND p.annee_id = f.annee_id AND NOT p.annule), 0) AS paye
-       FROM frais f
-       WHERE f.annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)
-         AND (f.niveau_id IS NULL OR f.niveau_id = $2)
-       ORDER BY f.libelle`,
-      [req.params.eleveId, info[0].niveau_id]
-    );
-
-    const exigibles = await exigiblesParFrais();
-    const lignes = frais.map((f) => {
-      // Un frais mensuel est du pour chaque mois deja commence, jusqu a son
-      // dernier mois (juin pour « octobre a juin »)
-      const du = f.recurrent ? Number(f.montant) * (exigibles[f.id] ?? 0) : Number(f.montant);
-      return { ...f, du, reste: Math.max(du - Number(f.paye), 0) };
-    });
-
-    const totalDu = lignes.reduce((s, l) => s + l.du, 0);
-    const totalPaye = lignes.reduce((s, l) => s + Number(l.paye), 0);
-
-    res.json({
-      eleve: info[0],
-      lignes,
-      total_du: totalDu,
-      total_paye: totalPaye,
-      reste: Math.max(totalDu - totalPaye, 0),
-      a_jour: totalPaye >= totalDu,
-    });
+    const situation = await calculerSituation(req.params.eleveId);
+    if (!situation) return res.status(404).json({ erreur: 'Eleve introuvable' });
+    res.json(situation);
   } catch (err) { next(err); }
 });
+
+/**
+ * Situation financiere d un eleve sur l annee active : du a ce jour, paye,
+ * reste, frais par frais. Partagee par la fiche Finances et le recu, pour
+ * qu ils affichent toujours les memes chiffres. null si l eleve n existe pas.
+ */
+async function calculerSituation(eleveId) {
+  const { rows: info } = await query(
+    `SELECT e.id, e.matricule, e.prenom, e.nom, c.libelle AS classe, c.niveau_id,
+            (SELECT libelle FROM annee_scolaire WHERE active LIMIT 1) AS annee
+     FROM eleve e
+     LEFT JOIN inscription i ON i.eleve_id = e.id
+       AND i.annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)
+     LEFT JOIN classe c ON c.id = i.classe_id
+     WHERE e.id = $1`,
+    [eleveId]
+  );
+  if (!info[0]) return null;
+
+  const { rows: frais } = await query(
+    `SELECT f.*,
+            COALESCE((SELECT SUM(p.montant) FROM paiement p
+                      -- Seuls les versements de CETTE annee : un paiement
+                      -- d une annee passee ne regle pas la scolarite en cours
+                      WHERE p.eleve_id = $1 AND p.frais_id = f.id
+                        AND p.annee_id = f.annee_id AND NOT p.annule), 0) AS paye
+     FROM frais f
+     WHERE f.annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)
+       AND (f.niveau_id IS NULL OR f.niveau_id = $2)
+     ORDER BY f.libelle`,
+    [eleveId, info[0].niveau_id]
+  );
+
+  const exigibles = await exigiblesParFrais();
+  const lignes = frais.map((f) => {
+    // Un frais mensuel est du pour chaque mois deja commence, jusqu a son
+    // dernier mois (juin pour « octobre a juin »)
+    const du = f.recurrent ? Number(f.montant) * (exigibles[f.id] ?? 0) : Number(f.montant);
+    return { ...f, du, reste: Math.max(du - Number(f.paye), 0) };
+  });
+
+  const totalDu = lignes.reduce((s, l) => s + l.du, 0);
+  const totalPaye = lignes.reduce((s, l) => s + Number(l.paye), 0);
+
+  return {
+    eleve: info[0],
+    lignes,
+    total_du: totalDu,
+    total_paye: totalPaye,
+    reste: Math.max(totalDu - totalPaye, 0),
+    a_jour: totalPaye >= totalDu,
+  };
+}
 
 /**
  * Nombre de mensualites exigibles a ce jour, frais mensuel par frais
@@ -602,6 +613,27 @@ router.get('/recus', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * Situation de l eleve imprimee sur le recu (a la date d edition) : du a ce
+ * jour, paye, reste, et dernier mois regle de chaque mensualite.
+ */
+async function situationPourRecu(eleveId) {
+  const sit = await calculerSituation(eleveId);
+  if (!sit) return null;
+  const mensualites = [];
+  for (const l of sit.lignes.filter((x) => x.recurrent)) {
+    const e = await echeancier(eleveId, l.id);
+    if (!e) continue;
+    const regles = e.etat.filter((m) => m.statut === 'paye');
+    mensualites.push({
+      libelle: l.libelle,
+      regle_jusqu_a: regles.length ? regles.at(-1).mois : null,
+      mois_restants: e.etat.filter((m) => m.statut !== 'paye').length,
+    });
+  }
+  return { total_du: sit.total_du, total_paye: sit.total_paye, reste: sit.reste, mensualites };
+}
+
 /** Recu complet, pret a imprimer. `:id` est l id d une ecriture du recu. */
 router.get('/recus/:id', async (req, res, next) => {
   try {
@@ -630,13 +662,18 @@ router.get('/recus/:id', async (req, res, next) => {
     const premiere = lignes[0];
 
     const { rows: eleve } = await query(
-      `SELECT e.id, e.matricule, e.prenom, e.nom, c.libelle AS classe, a.libelle AS annee,
-              (SELECT t.prenom || ' ' || t.nom FROM tuteur t
-               JOIN eleve_tuteur et ON et.tuteur_id = t.id
-               WHERE et.eleve_id = e.id ORDER BY et.principal DESC LIMIT 1) AS tuteur
+      `SELECT e.id, e.matricule, e.prenom, e.nom, e.sexe, e.date_naissance, e.lieu_naissance,
+              c.libelle AS classe, n.libelle AS niveau, a.libelle AS annee,
+              t.prenom || ' ' || t.nom AS tuteur, t.telephone AS tuteur_telephone, t.lien AS tuteur_lien
        FROM eleve e
+       LEFT JOIN LATERAL (
+         SELECT t.prenom, t.nom, t.telephone, et.lien FROM tuteur t
+         JOIN eleve_tuteur et ON et.tuteur_id = t.id
+         WHERE et.eleve_id = e.id ORDER BY et.principal DESC LIMIT 1
+       ) t ON true
        LEFT JOIN inscription i ON i.eleve_id = e.id AND i.annee_id = $2
        LEFT JOIN classe c ON c.id = i.classe_id
+       LEFT JOIN niveau n ON n.id = c.niveau_id
        LEFT JOIN annee_scolaire a ON a.id = $2
        WHERE e.id = $1`,
       [base[0].eleve_id, premiere.annee_id]
@@ -685,6 +722,7 @@ router.get('/recus/:id', async (req, res, next) => {
       valide_le: wave?.confirme_le || premiere.cree_le,
       payeur: wave?.payeur || eleve[0]?.tuteur || null,
       wave,
+      situation: await situationPourRecu(base[0].eleve_id),
     });
   } catch (err) { next(err); }
 });

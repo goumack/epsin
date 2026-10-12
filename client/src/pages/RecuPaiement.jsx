@@ -77,13 +77,33 @@ export default function RecuPaiement() {
           </div>
         </header>
 
-        {/* Eleve et payeur */}
+        {/* Eleve : identite, classe, tuteur */}
         <section className="mt-5 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
           <p><span className="text-slate-600">Élève :</span> <strong>{eleve?.prenom} {eleve?.nom}</strong></p>
           <p><span className="text-slate-600">Matricule :</span> <span className="font-mono">{eleve?.matricule}</span></p>
-          <p><span className="text-slate-600">Classe :</span> {eleve?.classe || '—'}</p>
+          {(eleve?.date_naissance || eleve?.lieu_naissance) && (
+            <p>
+              <span className="text-slate-600">{eleve?.sexe === 'F' ? 'Née' : 'Né'} :</span>
+              {eleve?.date_naissance && <> le {dateFr(eleve.date_naissance)}</>}
+              {eleve?.lieu_naissance && <> à {eleve.lieu_naissance}</>}
+            </p>
+          )}
+          {eleve?.sexe && (
+            <p><span className="text-slate-600">Sexe :</span> {eleve.sexe === 'F' ? 'Féminin' : 'Masculin'}</p>
+          )}
+          <p>
+            <span className="text-slate-600">Classe :</span> <strong>{eleve?.classe || '—'}</strong>
+            {eleve?.niveau && eleve.niveau !== eleve.classe && <> ({eleve.niveau})</>}
+          </p>
           <p><span className="text-slate-600">Année scolaire :</span> {eleve?.annee || '—'}</p>
-          {recu.payeur && (
+          {eleve?.tuteur && (
+            <p className="col-span-2">
+              <span className="text-slate-600">Tuteur :</span> {eleve.tuteur}
+              {eleve.tuteur_lien && <> ({eleve.tuteur_lien})</>}
+              {eleve.tuteur_telephone && <> — {eleve.tuteur_telephone}</>}
+            </p>
+          )}
+          {recu.payeur && recu.payeur !== eleve?.tuteur && (
             <p className="col-span-2"><span className="text-slate-600">Reçu de :</span> {recu.payeur}</p>
           )}
         </section>
@@ -136,6 +156,29 @@ export default function RecuPaiement() {
             </p>
           )}
         </section>
+
+        {/* Situation de l eleve a la date d edition */}
+        {recu.situation && !recu.annule && (
+          <section className="mt-4 rounded border border-black p-3 text-sm">
+            <p className="mb-1 font-semibold">Situation de l'élève au {new Date().toLocaleDateString('fr-FR')}</p>
+            {recu.situation.mensualites.map((m) => (
+              <p key={m.libelle}>
+                {m.libelle} : {m.regle_jusqu_a
+                  ? <>réglée jusqu'à <strong className="capitalize">{libelleMois(m.regle_jusqu_a)}</strong></>
+                  : 'aucun mois réglé'}
+                {m.mois_restants > 0
+                  ? <> — {m.mois_restants} mois restant{m.mois_restants > 1 ? 's' : ''} sur l'année</>
+                  : <> — année entièrement réglée</>}
+              </p>
+            ))}
+            <p className="mt-1">
+              Dû à ce jour : {fcfa(recu.situation.total_du)} — Payé : {fcfa(recu.situation.total_paye)} —{' '}
+              {recu.situation.reste > 0
+                ? <strong>Reste à payer : {fcfa(recu.situation.reste)}</strong>
+                : <strong>À jour de ses paiements</strong>}
+            </p>
+          </section>
+        )}
 
         {/* Signatures */}
         <section className="mt-8 grid grid-cols-2 gap-8 text-sm">
