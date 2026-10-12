@@ -396,7 +396,8 @@ router.get('/situation/:eleveId', async (req, res, next) => {
     }
 
     const { rows: info } = await query(
-      `SELECT e.id, e.matricule, e.prenom, e.nom, c.libelle AS classe, c.niveau_id
+      `SELECT e.id, e.matricule, e.prenom, e.nom, c.libelle AS classe, c.niveau_id,
+              (SELECT libelle FROM annee_scolaire WHERE active LIMIT 1) AS annee
        FROM eleve e
        LEFT JOIN inscription i ON i.eleve_id = e.id
          AND i.annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)

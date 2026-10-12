@@ -415,8 +415,19 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
         {situation && (
           situation.lignes.length === 0 ? (
             <p className="rounded-lg bg-amber-50 dark:bg-amber-950/40 p-3 text-sm text-amber-700 dark:text-amber-300">
-              Aucun frais au barème pour la classe de cet élève. Renseignez le barème (Finances → Barème des frais),
-              {!situation.eleve?.classe && ' ou affectez d’abord l’élève à une classe,'} puis réessayez.
+              {situation.eleve?.classe ? (
+                <>
+                  Aucun tarif enregistré pour la classe <strong>{situation.eleve.classe}</strong> sur
+                  l'année <strong>{situation.eleve.annee}</strong>. Dans Finances → Barème des frais
+                  (titre « {situation.eleve.annee} »), remplissez la ligne de cette classe et cliquez sur
+                  Enregistrer, puis rouvrez cet encaissement.
+                </>
+              ) : (
+                <>
+                  Cet élève n'est dans aucune classe de l'année <strong>{situation.eleve?.annee}</strong> :
+                  affectez-le d'abord (dossier de l'élève → Informations), ses frais en dépendent.
+                </>
+              )}
             </p>
           ) : (
             <div>
