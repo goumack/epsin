@@ -48,7 +48,7 @@ async function seed() {
       // le document sort incomplet.
       `INSERT INTO etablissement (nom, sigle, adresse, telephone, email,
                                   inspection_academie, inspection_ief)
-       VALUES ('École Privée Serighe Ibrahima Niang','EPSIN-YEHE','Dakar, Senegal',
+       VALUES ('École Privée Serigne Ibrahima Niang','EPSIN - YENE','Dakar, Senegal',
                '+221 33 000 00 00','contact@epsin.sn','IA DAKAR','IEF Dakar 1')`
     );
 

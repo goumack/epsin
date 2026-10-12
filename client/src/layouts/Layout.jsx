@@ -115,11 +115,11 @@ export default function Layout() {
           <div className="flex items-center gap-2.5 border-b border-slate-200 dark:border-slate-800 px-5 h-16 shrink-0">
             <img
               src="/logo-epsin.jpeg"
-              alt="Sceau de l'École Privée Serighe Ibrahima Niang"
+              alt="Sceau de l'École Privée Serigne Ibrahima Niang"
               className="h-9 w-9 shrink-0 rounded-full object-cover"
             />
             <div className="min-w-0">
-              <p className="font-semibold leading-tight">EPSIN-YEHE</p>
+              <p className="font-semibold leading-tight">EPSIN - YENE</p>
               <p className="text-[11px] text-slate-500 leading-tight">Gestion scolaire</p>
             </div>
             <button

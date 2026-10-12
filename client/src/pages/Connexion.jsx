@@ -42,12 +42,12 @@ export default function Connexion() {
         <div className="mb-6 text-center">
           <img
             src="/logo-epsin.jpeg"
-            alt="Sceau de l'École Privée Serighe Ibrahima Niang"
+            alt="Sceau de l'École Privée Serigne Ibrahima Niang"
             className="mx-auto mb-4 h-24 w-24 rounded-full object-cover shadow-lg ring-2 ring-white/25"
           />
-          <h1 className="text-2xl font-bold text-white">EPSIN-YEHE</h1>
+          <h1 className="text-2xl font-bold text-white">EPSIN - YENE</h1>
           <p className="mt-1 text-sm" style={{ color: '#E8C88A' }}>
-            École Privée Serighe Ibrahima Niang
+            École Privée Serigne Ibrahima Niang
           </p>
         </div>
 
