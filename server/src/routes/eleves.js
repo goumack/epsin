@@ -271,7 +271,10 @@ router.post('/', autoriser(...GESTION, 'comptable'), async (req, res, next) => {
     // Le mot de passe temporaire n est renvoye qu ici, pour la fiche d acces
     res.status(201).json({
       ...inscrit,
-      compte_parent: { identifiant: compte.identifiant, mot_de_passe: compte.mot_de_passe },
+      compte_parent: {
+        identifiant: compte.identifiant, mot_de_passe: compte.mot_de_passe,
+        tuteur: compte.tuteur, telephone: compte.telephone,
+      },
     });
   } catch (err) { next(err); }
 });
@@ -458,6 +461,7 @@ router.post('/:id/compte-parent', autoriser(...GESTION, 'comptable'), async (req
       'utilisateur', compte.utilisateur_id, { eleve_id: Number(req.params.id) });
     res.status(compte.cree ? 201 : 200).json({
       identifiant: compte.identifiant, mot_de_passe: compte.mot_de_passe, cree: compte.cree,
+      tuteur: compte.tuteur, telephone: compte.telephone,
     });
   } catch (err) { next(err); }
 });

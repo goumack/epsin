@@ -30,8 +30,9 @@ export function identifiantParent(matricule) {
 /**
  * Cree le compte parent d un eleve, ou, s il existe deja, lui attribue un
  * nouveau mot de passe temporaire (perte de la fiche, parent bloque).
- * Retourne { identifiant, mot_de_passe, cree } — le mot de passe en clair
- * n est disponible qu ici, une seule fois.
+ * Retourne { identifiant, mot_de_passe, cree, tuteur, telephone } — le mot
+ * de passe en clair n est disponible qu ici, une seule fois. tuteur et
+ * telephone servent a envoyer la fiche par WhatsApp.
  *
  * `client` : client d une transaction en cours (ou le pool).
  */
@@ -50,6 +51,10 @@ export async function attribuerCompteParent(client, eleveId) {
   );
   if (!el[0]) throw Object.assign(new Error('Eleve introuvable'), { status: 404 });
   const eleve = el[0];
+  const contact = {
+    tuteur: [eleve.tuteur_prenom, eleve.tuteur_nom].filter(Boolean).join(' ') || null,
+    telephone: eleve.telephone || null,
+  };
 
   const identifiant = identifiantParent(eleve.matricule);
   const motDePasse = motDePasseTemporaire();
@@ -66,7 +71,7 @@ export async function attribuerCompteParent(client, eleveId) {
        WHERE id = $1`,
       [existant[0].id, empreinte, chiffrer(motDePasse)]
     );
-    return { identifiant, mot_de_passe: motDePasse, cree: false, utilisateur_id: existant[0].id };
+    return { identifiant, mot_de_passe: motDePasse, cree: false, utilisateur_id: existant[0].id, ...contact };
   }
 
   // utilisateur.telephone est UNIQUE, mais un tuteur de fratrie a un compte
@@ -86,5 +91,5 @@ export async function attribuerCompteParent(client, eleveId) {
     [identifiant, empreinte, eleve.tuteur_prenom || 'Tuteur',
      eleve.tuteur_nom || eleve.nom, telephone, eleveId, chiffrer(motDePasse)]
   );
-  return { identifiant, mot_de_passe: motDePasse, cree: true, utilisateur_id: rows[0].id };
+  return { identifiant, mot_de_passe: motDePasse, cree: true, utilisateur_id: rows[0].id, ...contact };
 }

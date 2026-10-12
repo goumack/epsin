@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { KeyRound, Printer } from 'lucide-react';
+import { KeyRound, MessageCircle, Printer } from 'lucide-react';
 import { get } from '../lib/api';
+import { adressePublique, lienWhatsApp, NUMERO_ENVOI } from '../lib/whatsapp';
 import { Modale } from './ui';
 
 /** Echappe un texte avant de l ecrire dans le HTML de la fiche. */
@@ -38,7 +39,7 @@ const PUBLICS = {
  */
 function imprimerFiche({ etablissement, eleve, compte, destinataire = 'parent' }) {
   const textes = PUBLICS[destinataire];
-  const site = window.location.origin;
+  const site = adressePublique();
   const fenetre = window.open('', '_blank');
   if (!fenetre) return false;
   fenetre.document.write(`<!doctype html>
@@ -91,6 +92,39 @@ function imprimerFiche({ etablissement, eleve, compte, destinataire = 'parent' }
   return true;
 }
 
+/** Message WhatsApp : le contenu de la fiche, en texte. */
+function messageWhatsApp({ etablissement, eleve, compte, destinataire }) {
+  const ecole = etablissement?.nom || 'EPSIN';
+  const lignes = destinataire === 'parent'
+    ? [
+      `Bonjour${compte.tuteur ? ` ${compte.tuteur}` : ''},`,
+      '',
+      `${ecole} vous souhaite la bienvenue. ${eleve.prenom} ${eleve.nom} est bien inscrit(e)`
+        + (eleve.classe ? ` en ${eleve.classe}` : '')
+        + (eleve.matricule ? ` (matricule ${eleve.matricule})` : '') + '.',
+      '',
+      '*Accès au portail des parents*',
+    ]
+    : [`Bonjour ${eleve.prenom},`, '', `*Votre accès à EPSIN — ${ecole}*`];
+  return [
+    ...lignes,
+    `Adresse : ${adressePublique()}`,
+    `Identifiant : ${compte.identifiant}`,
+    `Mot de passe : ${compte.mot_de_passe}`,
+    '',
+    'À la première connexion, vous choisirez votre propre mot de passe : celui-ci ne servira plus.',
+    PUBLICS[destinataire].usage,
+    '',
+    `${ecole}${etablissement?.telephone ? ` — ${etablissement.telephone}` : ''}`,
+  ].join('\n');
+}
+
+/** Numero du destinataire connu par avance (tuteur principal, enseignant). */
+function numeroConnu(eleve, compte) {
+  const principal = eleve?.tuteurs?.find((t) => t.principal) || eleve?.tuteurs?.[0];
+  return compte?.telephone || principal?.telephone || eleve?.contact_tuteur || eleve?.telephone || '';
+}
+
 /**
  * Fenetre affichee juste apres la creation (ou la reinitialisation) d un
  * compte : identifiants a remettre, et impression de la fiche.
@@ -99,10 +133,16 @@ function imprimerFiche({ etablissement, eleve, compte, destinataire = 'parent' }
  */
 export default function FicheAcces({ eleve, compte, onFermer, destinataire = 'parent', suite = null }) {
   const [etablissement, setEtablissement] = useState(null);
+  const [telephone, setTelephone] = useState('');
 
   useEffect(() => {
     if (compte) get('/etablissement').then(setEtablissement).catch(() => {});
+    setTelephone(numeroConnu(eleve, compte));
   }, [compte]);
+
+  const lien = compte && eleve
+    ? lienWhatsApp(telephone, messageWhatsApp({ etablissement, eleve, compte, destinataire }))
+    : null;
 
   return (
     <Modale ouverte={Boolean(compte)} onFermer={onFermer} taille="sm"
@@ -127,6 +167,26 @@ export default function FicheAcces({ eleve, compte, onFermer, destinataire = 'pa
             À la première connexion, {destinataire === 'parent' ? 'le parent' : "l'enseignant"} choisira
             son propre mot de passe.
           </p>
+          <div className="space-y-2 rounded-lg border border-emerald-200 dark:border-emerald-900 bg-emerald-50/60 dark:bg-emerald-950/30 p-3">
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300" htmlFor="wa-numero">
+              Envoyer la fiche par WhatsApp {destinataire === 'parent' ? 'au parent' : "à l'enseignant"}
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <input id="wa-numero" className="champ min-w-0 flex-1" inputMode="tel" placeholder="77 123 45 67"
+                     value={telephone} onChange={(e) => setTelephone(e.target.value)} />
+              <a href={lien || undefined} target="_blank" rel="noopener noreferrer"
+                 aria-disabled={!lien}
+                 className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-white ${
+                   lien ? 'bg-emerald-600 hover:bg-emerald-700' : 'pointer-events-none bg-slate-300 dark:bg-slate-700'}`}>
+                <MessageCircle className="h-4 w-4" /> Envoyer par WhatsApp
+              </a>
+            </div>
+            <p className="text-xs text-slate-500">
+              {telephone && !lien ? 'Numéro incomplet. ' : ''}
+              WhatsApp s'ouvre avec le message prêt : vérifiez qu'il s'agit du compte de l'école
+              ({NUMERO_ENVOI}), puis appuyez sur Envoyer.
+            </p>
+          </div>
           <div className="flex justify-end gap-2 border-t border-slate-200 dark:border-slate-800 pt-3">
             <button type="button" className="bouton-secondaire" onClick={onFermer}>Fermer</button>
             <button type="button" className={suite ? 'bouton-secondaire' : 'bouton-primaire'}
