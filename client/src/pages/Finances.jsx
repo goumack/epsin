@@ -9,7 +9,7 @@ import { get, post, patch, fcfa, dateFr } from '../lib/api';
 import {
   Chargement, Erreur, Vide, Modale, Puce, Onglets, Statistique, Recherche, useToast,
 } from '../components/ui';
-import { STATUTS_PAIEMENT } from '../components/PaiementWave';
+import { STATUTS_PAIEMENT, libelleMois } from '../components/PaiementWave';
 
 const MODES = {
   especes: 'Espèces', wave: 'Wave', om: 'Orange Money',
@@ -159,7 +159,8 @@ function Paiements() {
   useEffect(() => { charger(); }, [charger]);
 
   const annuler = async (id) => {
-    if (!window.confirm('Annuler ce paiement ? L\'écriture sera conservée mais marquée annulée.')) return;
+    if (!window.confirm('Annuler ce paiement ? S\'il couvre plusieurs mois, tout l\'encaissement est '
+      + 'annulé. Les écritures sont conservées mais marquées annulées.')) return;
     try {
       await patch(`/finances/paiements/${id}/annuler`);
       succes('Paiement annulé');
@@ -250,27 +251,45 @@ const estInscription = (fr) => !fr.recurrent && /inscri/i.test(fr.libelle);
  * Encaissement au guichet. `eleveInitial` ouvre le formulaire sur un eleve
  * deja choisi (depuis son dossier, ou juste apres son inscription) ;
  * `preselection="inscription"` y place en plus ses frais d inscription.
+ *
+ * Pour un frais mensuel, deux facons de payer, comme sur le portail parent :
+ * un nombre de mois complets (avance de plusieurs mois possible), ou un
+ * montant libre (avance partielle), reparti mois par mois par le serveur.
  */
 export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveInitial = null, preselection = null }) {
   const [recherche, setRecherche] = useState('');
   const [eleves, setEleves] = useState([]);
   const [eleve, setEleve] = useState(null);
   const [situation, setSituation] = useState(null);
+  const [echeancier, setEcheancier] = useState([]);
   const [frais, setFrais] = useState([]);
-  const [f, setF] = useState({ frais_id: '', montant: '', mode: 'especes', reference: '', mois_couvert: '' });
+  const [f, setF] = useState({ frais_id: '', montant: '', mode: 'especes', reference: '' });
+  const [libre, setLibre] = useState(false);
+  const [nbMois, setNbMois] = useState(1);
   const [envoi, setEnvoi] = useState(false);
+
+  /** Situation et echeancier de l eleve choisi. */
+  const chargerEleve = async (e) => {
+    const [sit, ech] = await Promise.all([
+      get(`/finances/situation/${e.id}`).catch(() => null),
+      get(`/finances/echeancier/${e.id}`).catch(() => []),
+    ]);
+    setSituation(sit);
+    setEcheancier(ech);
+    return sit;
+  };
 
   useEffect(() => {
     if (!ouvert) return;
-    setRecherche(''); setEleve(eleveInitial); setSituation(null);
-    setF({ frais_id: '', montant: '', mode: 'especes', reference: '', mois_couvert: '' });
+    setRecherche(''); setEleve(eleveInitial); setSituation(null); setEcheancier([]);
+    setF({ frais_id: '', montant: '', mode: 'especes', reference: '' });
+    setLibre(false); setNbMois(1);
     (async () => {
       const [bareme, sit] = await Promise.all([
         get('/finances/frais').catch(() => []),
-        eleveInitial ? get(`/finances/situation/${eleveInitial.id}`).catch(() => null) : null,
+        eleveInitial ? chargerEleve(eleveInitial) : null,
       ]);
       setFrais(bareme);
-      setSituation(sit);
       if (preselection === 'inscription') {
         // Les frais d inscription applicables a l eleve (son niveau ou tous)
         const ligne = sit?.lignes?.find(estInscription) || bareme.find(estInscription);
@@ -291,39 +310,74 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
     return () => clearTimeout(t);
   }, [recherche, eleve]);
 
-  const choisir = async (e) => {
+  const choisir = (e) => {
     setEleve(e);
     setEleves([]);
-    try { setSituation(await get(`/finances/situation/${e.id}`)); } catch { /* optionnel */ }
+    chargerEleve(e);
   };
 
-  const soumettre = async (ev) => {
-    ev.preventDefault();
-    if (!eleve) return onErreur('Sélectionnez un élève');
-    setEnvoi(true);
-    try {
-      const cree = await post('/finances/paiements', {
-        eleve_id: eleve.id,
-        frais_id: f.frais_id ? Number(f.frais_id) : null,
-        montant: Number(f.montant),
-        mode: f.mode,
-        reference: f.reference || null,
-        mois_couvert: f.mois_couvert || null,
-      });
-      onCree(cree);
-    } catch (err) { onErreur(err.message); } finally { setEnvoi(false); }
-  };
+  // Frais mensuel choisi : son echeancier, mois par mois
+  const mensuel = echeancier.find((x) => String(x.id) === f.frais_id) || null;
+  const aRegler = mensuel ? mensuel.mois.filter((m) => m.statut !== 'paye') : [];
+  const resteAnnee = aRegler.reduce((s, m) => s + Number(m.reste_du), 0);
+  const nb = Math.min(Math.max(nbMois, 1), aRegler.length || 1);
+  const totalMois = aRegler.slice(0, nb).reduce((s, m) => s + Number(m.reste_du), 0);
+  const montantSaisi = Math.round(Number(f.montant)) || 0;
 
-  const maj = (c) => (e) => setF((v) => ({ ...v, [c]: e.target.value }));
+  // Apercu de la ventilation d un montant libre, comme le fera le serveur
+  const apercu = [];
+  if (mensuel && libre) {
+    let r = montantSaisi;
+    for (const m of aRegler) {
+      if (r <= 0) break;
+      const part = Math.min(r, Number(m.reste_du));
+      apercu.push({ mois: m.mois, part, du: Number(m.reste_du) });
+      r -= part;
+    }
+  }
+
+  const montantFinal = mensuel && !libre ? totalMois : montantSaisi;
 
   // Choisir un frais propose ce qui reste a payer dessus (sinon son montant)
   const choisirFrais = (e) => {
     const id = e.target.value;
     const ligne = situation?.lignes?.find((l) => String(l.id) === id);
     const bareme = frais.find((fr) => String(fr.id) === id);
+    const ech = echeancier.find((x) => String(x.id) === id);
+    if (ech) {
+      // Par defaut : les mois echus non regles, au moins un
+      const echus = ech.mois.filter((m) => m.statut === 'en_retard' || m.statut === 'partiel').length;
+      setNbMois(Math.max(echus, 1));
+      setLibre(false);
+    }
     const propose = ligne ? (ligne.recurrent ? ligne.montant : ligne.reste) : bareme?.montant;
     setF((v) => ({ ...v, frais_id: id, montant: propose ? String(Math.round(propose)) : v.montant }));
   };
+
+  const soumettre = async (ev) => {
+    ev.preventDefault();
+    if (!eleve) return onErreur('Sélectionnez un élève');
+    if (!(montantFinal > 0)) return onErreur('Montant à encaisser invalide');
+    setEnvoi(true);
+    try {
+      const cree = await post('/finances/paiements', {
+        eleve_id: eleve.id,
+        frais_id: f.frais_id ? Number(f.frais_id) : null,
+        mode: f.mode,
+        reference: f.reference || null,
+        // Mois complets : le serveur calcule lui-meme le montant
+        ...(mensuel && !libre ? { nb_mois: nb } : { montant: montantSaisi }),
+      });
+      onCree(cree);
+    } catch (err) { onErreur(err.message); } finally { setEnvoi(false); }
+  };
+
+  const maj = (c) => (e) => setF((v) => ({ ...v, [c]: e.target.value }));
+  const onglet = (actif) => `flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+    actif
+      ? 'bg-white dark:bg-slate-900 shadow-sm text-slate-900 dark:text-slate-100'
+      : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+  }`;
 
   return (
     <Modale ouverte={ouvert} onFermer={onFermer} titre="Encaisser un paiement" taille="sm">
@@ -338,7 +392,7 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
               </span>
               <button
                 type="button"
-                onClick={() => { setEleve(null); setSituation(null); setRecherche(''); }}
+                onClick={() => { setEleve(null); setSituation(null); setEcheancier([]); setRecherche(''); }}
                 className="text-xs text-marine-600 hover:underline"
               >
                 Changer
@@ -379,35 +433,107 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
           <select className="champ" value={f.frais_id} onChange={choisirFrais}>
             <option value="">Non précisé</option>
             {frais.map((fr) => (
-              <option key={fr.id} value={fr.id}>{fr.libelle} — {fcfa(fr.montant)}</option>
+              <option key={fr.id} value={fr.id}>
+                {fr.libelle} — {fcfa(fr.montant)}{fr.recurrent ? ' / mois' : ''}
+              </option>
             ))}
           </select>
         </div>
 
+        {/* Frais mensuel : mois complets ou avance libre */}
+        {mensuel && (
+          aRegler.length === 0 ? (
+            <p className="rounded-lg bg-emerald-50 dark:bg-emerald-950/40 p-3 text-sm text-emerald-700 dark:text-emerald-300">
+              Toutes les mensualités de l'année sont réglées.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex gap-1 rounded-lg bg-slate-100 dark:bg-slate-800 p-1" role="tablist">
+                <button type="button" role="tab" aria-selected={!libre} className={onglet(!libre)}
+                        onClick={() => setLibre(false)}>
+                  Mois complets
+                </button>
+                <button type="button" role="tab" aria-selected={libre} className={onglet(libre)}
+                        onClick={() => setLibre(true)}>
+                  Avance (montant libre)
+                </button>
+              </div>
+
+              {libre ? (
+                <div className="space-y-1.5">
+                  <label className="etiquette" htmlFor="montant-libre">Montant versé *</label>
+                  <input id="montant-libre" type="number" min="1" className="champ" required
+                         value={f.montant} onChange={maj('montant')} />
+                  {montantSaisi > resteAnnee ? (
+                    <p className="text-xs text-amber-600">
+                      Au-delà de {fcfa(resteAnnee)} (tout le reste de l'année), le surplus est noté
+                      comme avance non affectée à un mois.
+                    </p>
+                  ) : apercu.length > 0 && (
+                    <ul className="space-y-0.5 text-xs text-slate-500">
+                      {apercu.map((a) => (
+                        <li key={a.mois} className="flex justify-between">
+                          <span className="capitalize">{libelleMois(a.mois)}</span>
+                          <span className="tabular-nums">
+                            {a.part >= a.du
+                              ? `réglé (${fcfa(a.part)})`
+                              : `${fcfa(a.part)} sur ${fcfa(a.du)} — reste ${fcfa(a.du - a.part)}`}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  <label className="etiquette" htmlFor="nb-mois-caisse">Mois à régler</label>
+                  <select id="nb-mois-caisse" className="champ" value={nb}
+                          onChange={(e) => setNbMois(Number(e.target.value))}>
+                    {aRegler.map((m, i) => (
+                      <option key={m.mois} value={i + 1}>
+                        {i + 1} mois — jusqu'à {libelleMois(m.mois)} · {fcfa(
+                          aRegler.slice(0, i + 1).reduce((s, x) => s + Number(x.reste_du), 0)
+                        )}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-xs text-slate-500">
+                    De {libelleMois(aRegler[0].mois)} à {libelleMois(aRegler[nb - 1].mois)} : {fcfa(totalMois)}
+                  </p>
+                </div>
+              )}
+            </div>
+          )
+        )}
+
         <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="etiquette">Montant *</label>
-            <input type="number" min="1" className="champ" value={f.montant} onChange={maj('montant')} required />
-          </div>
+          {!mensuel && (
+            <div>
+              <label className="etiquette">Montant *</label>
+              <input type="number" min="1" className="champ" value={f.montant} onChange={maj('montant')} required />
+            </div>
+          )}
           <div>
             <label className="etiquette">Mode</label>
             <select className="champ" value={f.mode} onChange={maj('mode')}>
               {Object.entries(MODES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
           </div>
-          <div>
-            <label className="etiquette">Mois couvert</label>
-            <input type="month" className="champ" value={f.mois_couvert} onChange={maj('mois_couvert')} />
-          </div>
-          <div>
+          <div className={mensuel ? '' : 'col-span-2'}>
             <label className="etiquette">Référence</label>
             <input className="champ" value={f.reference} onChange={maj('reference')} placeholder="N° transaction" />
           </div>
         </div>
 
-        <div className="flex justify-end gap-2 pt-2">
+        <div className="flex items-center justify-end gap-2 pt-2">
+          {montantFinal > 0 && (
+            <span className="mr-auto text-sm text-slate-500">
+              Total : <strong className="tabular-nums text-slate-800 dark:text-slate-200">{fcfa(montantFinal)}</strong>
+            </span>
+          )}
           <button type="button" onClick={onFermer} className="bouton-secondaire">Annuler</button>
-          <button type="submit" className="bouton-primaire" disabled={envoi}>
+          <button type="submit" className="bouton-primaire"
+                  disabled={envoi || (mensuel && aRegler.length === 0 && !libre)}>
             {envoi ? 'Enregistrement…' : 'Encaisser'}
           </button>
         </div>

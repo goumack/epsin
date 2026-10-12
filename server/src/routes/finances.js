@@ -4,6 +4,9 @@ import { authentifier, autoriser, tracer } from '../middleware/auth.js';
 import { verifierEleveTuteur, estTuteur, eleveSuivi } from '../middleware/portee-tuteur.js';
 import { prochainNumeroRecu } from '../db/recus.js';
 import { montantEnLettres } from '../metier/montant-lettres.js';
+import {
+  moisDeLAnnee, etatDesMois, montantPourMois, repartirVersement,
+} from '../metier/mensualites.js';
 
 const router = Router();
 router.use(authentifier);
@@ -76,45 +79,139 @@ router.get('/paiements', autoriser(...CAISSE, 'censeur'), async (req, res, next)
   } catch (err) { next(err); }
 });
 
-router.post('/paiements', autoriser(...CAISSE), async (req, res, next) => {
+/**
+ * Echeancier d un frais mensuel pour un eleve : mois de l annee active,
+ * deja verse (cette annee uniquement) et etat de chaque mois.
+ * `db` permet de lire dans une transaction en cours.
+ */
+async function echeancier(eleveId, fraisId, db = { query }) {
+  const { rows } = await db.query(
+    `SELECT f.id, f.libelle, f.montant, f.recurrent, a.date_debut, a.date_fin,
+            COALESCE((SELECT SUM(p.montant) FROM paiement p
+                      WHERE p.eleve_id = $1 AND p.frais_id = f.id
+                        AND p.annee_id = f.annee_id AND NOT p.annule), 0) AS paye
+     FROM frais f JOIN annee_scolaire a ON a.id = f.annee_id
+     WHERE f.id = $2 AND a.active`,
+    [eleveId, fraisId]
+  );
+  if (!rows[0]) return null;
+  const f = rows[0];
+  const mois = moisDeLAnnee(f.date_debut, f.date_fin);
+  return {
+    id: f.id, libelle: f.libelle, montant: Number(f.montant), recurrent: f.recurrent,
+    paye: Number(f.paye), mois, etat: etatDesMois(mois, f.montant, f.paye),
+  };
+}
+
+/** Echeancier des frais mensuels d un eleve, pour le formulaire de caisse. */
+router.get('/echeancier/:eleveId', autoriser(...CAISSE), async (req, res, next) => {
   try {
-    const { eleve_id, frais_id, montant, mode, reference, mois_couvert, date_paiement } = req.body;
-    if (!eleve_id || !montant || Number(montant) <= 0) {
-      return res.status(400).json({ erreur: 'Eleve et montant positif requis' });
+    const { rows: frais } = await query(
+      `SELECT f.id FROM frais f
+       LEFT JOIN inscription i ON i.eleve_id = $1 AND i.annee_id = f.annee_id
+       LEFT JOIN classe c ON c.id = i.classe_id
+       WHERE f.recurrent AND f.montant > 0
+         AND f.annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)
+         AND (f.niveau_id IS NULL OR f.niveau_id = c.niveau_id)
+       ORDER BY f.libelle`,
+      [req.params.eleveId]
+    );
+    const resultat = [];
+    for (const f of frais) {
+      const e = await echeancier(Number(req.params.eleveId), f.id);
+      if (e) resultat.push({ id: e.id, libelle: e.libelle, montant: e.montant, paye: e.paye, mois: e.etat });
     }
-    const { rows: ar } = await query(`SELECT id FROM annee_scolaire WHERE active LIMIT 1`);
-    if (!ar[0]) return res.status(400).json({ erreur: 'Aucune annee scolaire active' });
-
-    const paiement = await transaction(async (client) => {
-      // Numero de recu sequentiel, commun au guichet et au paiement Wave
-      const numero = await prochainNumeroRecu(client);
-
-      const { rows } = await client.query(
-        `INSERT INTO paiement (eleve_id, frais_id, annee_id, montant, mode, reference,
-                               numero_recu, mois_couvert, date_paiement, encaisse_par)
-         VALUES ($1,$2,$3,$4,COALESCE($5,'especes'),$6,$7,$8,COALESCE($9,CURRENT_DATE),$10)
-         RETURNING *`,
-        [eleve_id, frais_id || null, ar[0].id, montant, mode, reference || null,
-         numero, mois_couvert || null, date_paiement || null, req.user.id]
-      );
-      return rows[0];
-    });
-
-    await tracer(req, 'encaissement', 'paiement', paiement.id, { montant });
-    res.status(201).json(paiement);
+    res.json(resultat);
   } catch (err) { next(err); }
 });
 
-// Annulation (on ne supprime jamais une ecriture comptable)
+/**
+ * Encaissement au guichet.
+ *
+ * Frais ponctuel (inscription, tenue...) : une ecriture, comme avant.
+ * Frais MENSUEL : le versement est ventile mois par mois, dans l ordre,
+ * a partir de ce qui est deja paye — une ecriture et un numero de recu par
+ * mois couvert, regroupees en un lot (un seul recu imprime). Deux facons :
+ *   - `nb_mois` : solder N mois complets, montant calcule par le serveur ;
+ *   - `montant` libre : avance partielle ou de plusieurs mois, le dernier
+ *     mois pouvant rester partiel.
+ */
+router.post('/paiements', autoriser(...CAISSE), async (req, res, next) => {
+  try {
+    const { eleve_id, frais_id, mode, reference, mois_couvert, date_paiement } = req.body;
+    if (!eleve_id) return res.status(400).json({ erreur: 'Eleve requis' });
+    const { rows: ar } = await query(`SELECT id FROM annee_scolaire WHERE active LIMIT 1`);
+    if (!ar[0]) return res.status(400).json({ erreur: 'Aucune annee scolaire active' });
+
+    const ech = frais_id ? await echeancier(Number(eleve_id), Number(frais_id)) : null;
+    const mensuel = Boolean(ech?.recurrent);
+
+    let montant = Number(req.body.montant);
+    if (mensuel && req.body.nb_mois != null && req.body.nb_mois !== '') {
+      const nb = Number(req.body.nb_mois);
+      montant = Number.isInteger(nb) ? montantPourMois(ech.etat, nb) : null;
+      if (montant == null) return res.status(400).json({ erreur: 'Il ne reste pas autant de mois a regler' });
+    }
+    if (!(montant > 0)) return res.status(400).json({ erreur: 'Eleve et montant positif requis' });
+
+    const lignes = await transaction(async (client) => {
+      // Releve l echeancier dans la transaction : un encaissement concurrent
+      // ne doit pas faire couvrir deux fois le meme mois
+      const etat = mensuel ? await echeancier(Number(eleve_id), Number(frais_id), client) : null;
+      const ventilation = mensuel
+        ? repartirVersement(etat.mois, etat.montant, etat.paye, montant)
+        : [{ mois: mois_couvert || null, montant }];
+
+      const creees = [];
+      for (const v of ventilation) {
+        // Numero de recu sequentiel, commun au guichet et au paiement Wave
+        const numero = await prochainNumeroRecu(client);
+        const { rows } = await client.query(
+          `INSERT INTO paiement (eleve_id, frais_id, annee_id, montant, mode, reference,
+                                 numero_recu, mois_couvert, date_paiement, encaisse_par)
+           VALUES ($1,$2,$3,$4,COALESCE($5,'especes'),$6,$7,$8,COALESCE($9,CURRENT_DATE),$10)
+           RETURNING *`,
+          [eleve_id, frais_id || null, ar[0].id, v.montant, mode, reference || null,
+           numero, v.mois, date_paiement || null, req.user.id]
+        );
+        creees.push(rows[0]);
+      }
+      // Plusieurs mois : un lot, donc un seul recu et une seule annulation
+      if (creees.length > 1) {
+        await client.query(`UPDATE paiement SET lot = $1 WHERE id = ANY($2)`,
+          [creees[0].id, creees.map((p) => p.id)]);
+      }
+      return creees;
+    });
+
+    await tracer(req, 'encaissement', 'paiement', lignes[0].id, {
+      montant, mois: lignes.map((l) => l.mois_couvert).filter(Boolean),
+    });
+    // La premiere ecriture ouvre le recu ; le montant est celui du lot
+    res.status(201).json({
+      ...lignes[0],
+      montant,
+      lignes: lignes.map((l) => ({ numero_recu: l.numero_recu, mois: l.mois_couvert, montant: Number(l.montant) })),
+    });
+  } catch (err) { next(err); }
+});
+
+// Annulation (on ne supprime jamais une ecriture comptable). Une ecriture
+// d un lot annule tout le lot : c est un seul encaissement.
 router.patch('/paiements/:id/annuler', autoriser(...CAISSE), async (req, res, next) => {
   try {
     const { rows } = await query(
-      `UPDATE paiement SET annule = true WHERE id = $1 AND annule = false RETURNING *`,
+      `UPDATE paiement SET annule = true
+       WHERE annule = false
+         AND (id = $1 OR lot = (SELECT lot FROM paiement WHERE id = $1 AND lot IS NOT NULL))
+       RETURNING *`,
       [req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ erreur: 'Paiement introuvable ou deja annule' });
-    await tracer(req, 'annulation', 'paiement', rows[0].id, { motif: req.body.motif || null });
-    res.json({ message: 'Paiement annule', paiement: rows[0] });
+    await tracer(req, 'annulation', 'paiement', Number(req.params.id), {
+      motif: req.body.motif || null, ecritures: rows.length,
+    });
+    res.json({ message: 'Paiement annule', paiement: rows[0], ecritures: rows.length });
   } catch (err) { next(err); }
 });
 
@@ -327,7 +424,8 @@ router.get('/recus', async (req, res, next) => {
        FROM paiement p
        LEFT JOIN frais f ON f.id = p.frais_id
        WHERE p.eleve_id = $1 AND ($2::boolean OR NOT p.annule)
-       GROUP BY COALESCE(p.paiement_en_ligne_id, -p.id), p.mode, f.libelle
+       -- Un recu par paiement Wave, par lot du guichet, sinon par ecriture
+       GROUP BY COALESCE('w' || p.paiement_en_ligne_id, 'l' || p.lot, 'p' || p.id), p.mode, f.libelle
        ORDER BY MIN(p.date_paiement) DESC, MIN(p.id) DESC`,
       // Le tuteur ne voit pas les ecritures annulees : elles ne valent rien
       [eleveId, !estTuteur(req.user)]
@@ -340,7 +438,7 @@ router.get('/recus', async (req, res, next) => {
 router.get('/recus/:id', async (req, res, next) => {
   try {
     const { rows: base } = await query(
-      `SELECT id, eleve_id, paiement_en_ligne_id FROM paiement WHERE id = $1`,
+      `SELECT id, eleve_id, paiement_en_ligne_id, lot FROM paiement WHERE id = $1`,
       [Number(req.params.id)]
     );
     // 404 aussi quand l acces est refuse : ne pas reveler qu un recu existe
@@ -356,9 +454,10 @@ router.get('/recus/:id', async (req, res, next) => {
        FROM paiement p
        LEFT JOIN frais f ON f.id = p.frais_id
        LEFT JOIN utilisateur u ON u.id = p.encaisse_par
-       WHERE ${base[0].paiement_en_ligne_id ? 'p.paiement_en_ligne_id = $1' : 'p.id = $1'}
+       WHERE ${base[0].paiement_en_ligne_id ? 'p.paiement_en_ligne_id = $1'
+         : base[0].lot ? 'p.lot = $1' : 'p.id = $1'}
        ORDER BY p.id`,
-      [base[0].paiement_en_ligne_id || base[0].id]
+      [base[0].paiement_en_ligne_id || base[0].lot || base[0].id]
     );
     const premiere = lignes[0];
 
