@@ -435,18 +435,20 @@ function Equipe({ classe, onChange }) {
   };
 
   if (!equipe) return <Chargement />;
-  if (!equipe.length) {
-    return (
-      <Vide titre="Aucune matière au programme de ce niveau"
-            texte="Ajoutez les matières et leurs coefficients dans Classes → Matières." />
-    );
-  }
+  const sansProgramme = (
+    <Vide titre="Aucune matière au programme de ce niveau"
+          texte="Ajoutez les matières et leurs coefficients dans Classes → Matières." />
+  );
 
   // A l elementaire, un seul maitre prend en charge les 4 domaines du CEB :
   // une carte par matiere repeterait 4 fois le meme nom, ce qui est confus.
   // On affiche donc une seule carte "maitre" avec ses domaines en-dessous.
   if (classe.entite === 'scolaire') {
-    const maitre = equipe.find((a) => a.nom);
+    // Le maitre se designe meme si le programme du niveau n est pas encore
+    // saisi : il est alors connu par le professeur principal de la classe
+    const maitre = equipe.find((a) => a.nom)
+      || (classe.maitre_id && classe.pp_nom
+        ? { prenom: classe.pp_prenom, nom: classe.pp_nom, email: classe.pp_email } : null);
     return (
       <div className="space-y-3">
         <p className="text-sm text-slate-500">
@@ -491,6 +493,11 @@ function Equipe({ classe, onChange }) {
             </div>
           )}
 
+          {!equipe.length && (
+            <p className="mt-4 border-t border-slate-100 dark:border-slate-800 pt-3 text-sm text-amber-600">
+              Aucun domaine au programme de ce niveau : ajoutez-les dans Classes → Matières pour saisir les notes.
+            </p>
+          )}
           <div className="mt-4 grid gap-2 border-t border-slate-100 dark:border-slate-800 pt-3 sm:grid-cols-2">
             {equipe.map((a) => (
               <div key={a.matiere_id} className="flex items-center justify-between gap-2 text-sm">
@@ -509,6 +516,7 @@ function Equipe({ classe, onChange }) {
   }
 
   // Moyen et secondaire : un professeur different par matiere
+  if (!equipe.length) return sansProgramme;
   const aPourvoir = equipe.filter((a) => !a.nom).length;
   return (
     <div className="space-y-2">
