@@ -34,11 +34,12 @@ const CLASSES = [
  * Bareme de la fiche, par niveau. La mensualite est due d octobre a juin
  * (mois_fin = 6) : 9 mensualites. « Fosco V/Med 1 000 F / 500 F » est lu
  * comme Fosco 1 000 F et visite medicale 500 F.
+ *
+ * La colonne « Inscription » de la fiche n est pas un frais : c est le total
+ * paye a l inscription (droit d inscription + blouse ou uniforme + assurance
+ * ou Fosco et visite medicale + 1er mois). Elle n est donc pas creee.
  */
 const BAREME = [
-  { libelle: 'Inscription', montants: {
-    CI: 21000, CP: 21000, CE1: 22000, CE2: 23000, CM1: 23000, CM2: 23000,
-    '6eme': 29000, '5eme': 29000, '4eme': 30000, '3eme': 30000 } },
   { libelle: "Droit d'inscription", montants: {
     CI: 5000, CP: 5000, CE1: 5000, CE2: 5000, CM1: 5000, CM2: 5000,
     '6eme': 5000, '5eme': 5000, '4eme': 5000, '3eme': 5000 } },

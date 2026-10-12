@@ -41,9 +41,22 @@ export default function FicheInscription() {
 
   const { eleve, etablissement: etab, annee, situation, recus } = donnees;
   const compte = eleve.compte_parent;
-  // Frais d inscription : ponctuels et nommes comme tels
-  const inscription = situation?.lignes?.filter((l) => !l.recurrent && /inscri/i.test(l.libelle)) || [];
-  const recusInscription = recus.filter((r) => /inscri/i.test(r.frais || ''));
+  // Inscription = frais ponctuels obligatoires + premier mois de mensualite
+  const lignes = situation?.lignes || [];
+  const ponctuels = lignes.filter((l) => !l.recurrent && l.obligatoire);
+  const mensualite = lignes.find((l) => l.recurrent && l.obligatoire);
+  const inscription = [
+    ...ponctuels.map((l) => ({
+      id: l.id, libelle: l.libelle, du: Number(l.montant), paye: Math.min(Number(l.paye), Number(l.montant)),
+    })),
+    ...(mensualite ? [{
+      id: mensualite.id, libelle: `${mensualite.libelle} (1er mois)`,
+      du: Number(mensualite.montant), paye: Math.min(Number(mensualite.paye), Number(mensualite.montant)),
+    }] : []),
+  ];
+  const totalInscription = inscription.reduce((s, l) => s + l.du, 0);
+  const payeInscription = inscription.reduce((s, l) => s + l.paye, 0);
+  const recusInscription = recus;
 
   const champ = (libelle, valeur) => (
     <p><span className="text-slate-600">{libelle} :</span> <strong>{valeur || '—'}</strong></p>
@@ -112,14 +125,26 @@ export default function FicheInscription() {
 
         <section className="mt-5">
           <h2 className="mb-2 border-b border-slate-300 pb-1 font-bold uppercase tracking-wide">Frais d'inscription</h2>
-          {inscription.length ? inscription.map((l) => (
-            <p key={l.id}>
-              {l.libelle} : {fcfa(l.du)} — payé {fcfa(l.paye)}
-              {' '}{Number(l.reste) > 0
-                ? <strong>— reste à payer {fcfa(l.reste)}</strong>
-                : <strong>— réglé</strong>}
-            </p>
-          )) : <p>Aucun frais d'inscription au barème.</p>}
+          {inscription.length ? (
+            <table className="w-full border-collapse">
+              <tbody>
+                {inscription.map((l) => (
+                  <tr key={l.id} className="border-b border-slate-200">
+                    <td className="py-1">{l.libelle}</td>
+                    <td className="py-1 text-right tabular-nums">{fcfa(l.du)}</td>
+                    <td className="py-1 pl-3 text-right">{l.paye >= l.du ? 'réglé' : `reste ${fcfa(l.du - l.paye)}`}</td>
+                  </tr>
+                ))}
+                <tr className="font-bold">
+                  <td className="py-1">Total à l'inscription</td>
+                  <td className="py-1 text-right tabular-nums">{fcfa(totalInscription)}</td>
+                  <td className="py-1 pl-3 text-right">
+                    {payeInscription >= totalInscription ? 'réglé' : `reste ${fcfa(totalInscription - payeInscription)}`}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          ) : <p>Aucun frais au barème pour cette classe.</p>}
           {recusInscription.length > 0 && (
             <p className="text-slate-600">
               Reçu(s) : {recusInscription.map((r) => `${r.numero_recu} du ${dateFr(r.date_paiement)}`).join(', ')}

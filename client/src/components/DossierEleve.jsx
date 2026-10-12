@@ -542,9 +542,10 @@ function Finances({ eleveId }) {
   if (erreur) return <Vide titre="Situation indisponible" texte={erreur} />;
   if (!situation) return <Chargement />;
 
-  // Frais d inscription encore dus : on les propose en premier
+  // Frais d entree (droit d inscription, blouse, assurance...) encore dus :
+  // on propose l encaissement de l inscription, 1er mois compris
   const inscriptionDue = situation.lignes?.some(
-    (l) => !l.recurrent && /inscri/i.test(l.libelle) && Number(l.reste) > 0
+    (l) => !l.recurrent && l.obligatoire && Number(l.reste) > 0
   );
 
   return (

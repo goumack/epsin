@@ -295,12 +295,16 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
       const mensuel = ech.find((x) => x.id === l.id);
       const echus = mensuel
         ? mensuel.mois.filter((m) => m.statut === 'en_retard' || m.statut === 'partiel').length : 0;
+      const moisARegler = mensuel ? mensuel.mois.filter((m) => m.statut !== 'paye').length : 0;
       initial[l.id] = {
-        // A l inscription : tous les frais ponctuels obligatoires encore dus
-        coche: preselectionner && !l.recurrent && l.obligatoire && Number(l.reste) > 0,
+        // A l inscription : les frais ponctuels obligatoires encore dus ET le
+        // premier mois — c est le total « inscription » de la fiche
+        // (ex. CI : 5 000 + 5 000 + 1 000 + 10 000 = 21 000)
+        coche: preselectionner && l.obligatoire
+          && (mensuel ? moisARegler > 0 : Number(l.reste) > 0),
         montant: String(Math.round(l.recurrent ? l.montant : (Number(l.reste) || l.montant))),
         libre: false,
-        nbMois: Math.max(echus, 1),
+        nbMois: preselectionner ? 1 : Math.max(echus, 1),
       };
     }
     setChoix(initial);
@@ -951,11 +955,13 @@ const CYCLES = [
  * Montants de la fiche de renseignements 2026-2027 de l etablissement,
  * par niveau. Proposes en un clic pour eviter la saisie ; la caisse les
  * verifie avant d enregistrer.
+ *
+ * La colonne « Inscription » de la fiche n est PAS un frais : c est le
+ * total paye le jour de l inscription (droit d inscription, blouse ou
+ * uniforme, assurance ou Fosco et visite medicale, et 1er mois). Elle n est
+ * donc pas reprise ici, sans quoi l inscription serait facturee deux fois.
  */
 const FICHE_2026 = [
-  { libelle: 'Inscription', recurrent: false, montants: {
-    CI: 21000, CP: 21000, CE1: 22000, CE2: 23000, CM1: 23000, CM2: 23000,
-    '6eme': 29000, '5eme': 29000, '4eme': 30000, '3eme': 30000 } },
   { libelle: "Droit d'inscription", recurrent: false, montants: {
     CI: 5000, CP: 5000, CE1: 5000, CE2: 5000, CM1: 5000, CM2: 5000,
     '6eme': 5000, '5eme': 5000, '4eme': 5000, '3eme': 5000 } },
