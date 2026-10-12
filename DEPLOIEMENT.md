@@ -145,6 +145,27 @@ gratuit en veille), l'application interroge Wave elle-même au retour du parent.
 
 ---
 
+## Configurer la rentrée 2026-2027
+
+Crée les classes de la fiche de renseignements (CI à 3ème) et enregistre
+le barème de chaque classe (inscription, droit d'inscription, blouse,
+assurance, uniforme, Fosco, visite médicale, mensualité d'octobre à juin).
+Dans PowerShell, depuis `server/` :
+
+```powershell
+$env:DATABASE_URL="postgresql://…votre URL Neon…"
+$env:DATABASE_SSL="true"
+npm run configurer-rentree
+```
+
+La commande met la structure à jour, vérifie que l'année active est
+2026-2027, affiche ce qu'elle va faire et demande de taper **OUI**. Elle ne
+supprime rien et peut être relancée : aucune classe n'est créée en double,
+les montants sont remis à ceux de la fiche. Les montants se modifient
+ensuite dans *Finances → Barème des frais*.
+
+---
+
 ## Remettre la base à neuf
 
 Pour repartir de zéro (après des essais, avant l'ouverture), dans PowerShell,
