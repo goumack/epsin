@@ -23,3 +23,8 @@ Thumbs.db
 # Captures et fichiers de travail
 captures/
 *.tmp
+
+# Programme Windows : copies faites a la construction
+desktop/serveur/
+desktop/interface/
+desktop/icone-source.jpeg

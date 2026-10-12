@@ -187,6 +187,63 @@ serveur affiché avant de confirmer.
 
 ---
 
+## Le poste de l'école (programme Windows, sans internet)
+
+Le programme **EPSIN** s'installe sur un ordinateur de l'école. Il contient
+sa propre base de données et fonctionne **sans internet**. Ce poste devient
+la **référence** : tout le personnel y travaille, et le site en ligne n'en
+est qu'une copie, à jour, pour les parents.
+
+- Les modifications faites au poste partent vers le site en ligne dès que
+  la connexion revient, toutes les 30 secondes.
+- Ce que font les parents en ligne (paiement Wave déclaré, changement de mot
+  de passe) descend au poste.
+- En ligne, le personnel ne peut que **consulter**. Toute modification se
+  fait au poste.
+- Les autres ordinateurs de l'école ouvrent `http://<adresse du poste>:4545`
+  dans leur navigateur, même sans internet (menu EPSIN → *Accès depuis les
+  autres ordinateurs…*).
+
+### 1. Passer le site en ligne en mode copie
+
+Render → **epsin-api** → **Environment**, ajouter :
+
+| Clé | Valeur |
+|---|---|
+| `EPSIN_MODE` | `replique` |
+| `SYNC_JETON` | une longue chaîne secrète (32 caractères ou plus) |
+
+Puis **Manual Deploy → Deploy latest commit**.
+
+### 2. Construire l'installateur (une fois, sur un ordinateur de développement)
+
+```powershell
+cd desktop
+npm install
+npm run construire
+```
+
+Le fichier produit est `desktop\dist\EPSIN-Installation-1.0.0.exe`.
+
+### 3. Installer sur le poste
+
+1. Lancer `EPSIN-Installation-1.0.0.exe`, puis ouvrir **EPSIN** depuis le bureau.
+2. Choisir **Récupérer les données en ligne**.
+3. Saisir l'adresse `https://epsin-api.onrender.com` et le `SYNC_JETON`.
+4. Attendre la fin de la copie, qui prend quelques minutes.
+
+On se connecte ensuite avec les mêmes comptes qu'en ligne. Le badge en haut
+de l'écran indique *Synchronisé* ou *Hors ligne · N en attente*.
+
+Les données sont dans `%APPDATA%\EPSIN` (menu EPSIN → *Ouvrir le dossier
+des données*). Pour les sauvegarder, copiez ce dossier pendant que le
+programme est **fermé**.
+
+> ⚠️ Un seul poste principal. Ne lancez pas une seconde copie de la base sur
+> un autre ordinateur. Les autres postes passent par le navigateur.
+
+---
+
 ## Bon à savoir
 
 **L'offre gratuite de Render met le service en veille** après 15 minutes

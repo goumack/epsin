@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>EPSIN — mise en route</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Segoe UI', system-ui, sans-serif; color: #0f172a; background: #f8fafc; }
+  header { background: linear-gradient(135deg, #7A0A1B, #3F040E); color: #fff; padding: 22px 28px; }
+  header h1 { margin: 0; font-size: 22px; }
+  header p { margin: 4px 0 0; color: #E8C88A; font-size: 14px; }
+  main { padding: 20px 28px; }
+  .choix { display: flex; gap: 8px; margin-bottom: 16px; }
+  .choix button { flex: 1; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff;
+                  font: inherit; cursor: pointer; }
+  .choix button.actif { border-color: #7A0A1B; background: #fdf2f4; color: #7A0A1B; font-weight: 600; }
+  section { display: none; }
+  section.actif { display: block; }
+  label { display: block; margin: 12px 0 4px; font-size: 14px; font-weight: 600; }
+  input { width: 100%; padding: 9px 11px; border: 1px solid #cbd5e1; border-radius: 8px; font: inherit; }
+  .aide { font-size: 13px; color: #475569; margin: 4px 0 0; }
+  .note { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; font-size: 13px; color: #334155; }
+  .action { margin-top: 18px; width: 100%; padding: 12px; border: 0; border-radius: 8px; background: #7A0A1B;
+            color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  .action:disabled { opacity: .6; cursor: wait; }
+  .erreur { margin-top: 12px; color: #b91c1c; font-size: 14px; }
+  .succes { margin-top: 12px; color: #047857; font-size: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bienvenue dans EPSIN</h1>
+  <p>Poste de l'école — fonctionne avec ou sans internet</p>
+</header>
+<main>
+  <div class="choix">
+    <button id="choix-ligne" class="actif" type="button">Récupérer les données en ligne</button>
+    <button id="choix-vide" type="button">Commencer avec une base vide</button>
+  </div>
+
+  <section id="ligne" class="actif">
+    <p class="note">
+      Le poste copie toutes les données du site en ligne (classes, élèves, barème, paiements…) et devient
+      la <strong>référence</strong> de l'école. Ensuite, il fonctionne sans internet et se synchronise tout seul
+      dès que la connexion revient.
+    </p>
+    <form id="form-ligne">
+      <label for="url">Adresse du serveur en ligne</label>
+      <input id="url" value="https://epsin-api.onrender.com" required>
+      <p class="aide">L'adresse de l'API (service epsin-api sur Render).</p>
+      <label for="jeton">Jeton de synchronisation</label>
+      <input id="jeton" type="password" required autocomplete="off">
+      <p class="aide">La valeur de SYNC_JETON, réglée sur le serveur en ligne (Render → epsin-api → Environment).</p>
+      <button class="action" type="submit">Récupérer les données</button>
+      <div class="erreur" id="erreur-ligne"></div>
+      <div class="succes" id="succes-ligne"></div>
+    </form>
+  </section>
+
+  <section id="vide">
+    <p class="note">
+      Pour une école qui démarre : le poste crée l'établissement, l'année en cours, les 13 niveaux et un compte
+      administrateur. La synchronisation avec un site en ligne pourra être ajoutée plus tard.
+    </p>
+    <form id="form-vide">
+      <label for="email">Email de l'administrateur</label>
+      <input id="email" type="email" value="admin@epsin.sn" required>
+      <label for="mdp">Mot de passe de l'administrateur (10 caractères minimum)</label>
+      <input id="mdp" type="password" minlength="10" required autocomplete="new-password">
+      <button class="action" type="submit">Créer la base</button>
+      <div class="erreur" id="erreur-vide"></div>
+    </form>
+  </section>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  // Message lisible : sans le prefixe technique d Electron
+  const lisible = (e) => String(e && e.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+
+  function choisir(cible) {
+    for (const nom of ['ligne', 'vide']) {
+      $(nom).classList.toggle('actif', nom === cible);
+      $('choix-' + nom).classList.toggle('actif', nom === cible);
+    }
+  }
+  $('choix-ligne').onclick = () => choisir('ligne');
+  $('choix-vide').onclick = () => choisir('vide');
+
+  $('form-ligne').onsubmit = async (e) => {
+    e.preventDefault();
+    const bouton = e.submitter;
+    bouton.disabled = true;
+    bouton.textContent = 'Récupération en cours… (quelques minutes)';
+    $('erreur-ligne').textContent = '';
+    try {
+      const compte = await window.epsin.cloner({ url: $('url').value, jeton: $('jeton').value });
+      $('succes-ligne').textContent =
+        `Données récupérées : ${compte.eleve || 0} élève(s), ${compte.classe || 0} classe(s), `
+        + `${compte.paiement || 0} paiement(s). Ouverture d'EPSIN…`;
+    } catch (err) {
+      $('erreur-ligne').textContent = lisible(err);
+      bouton.disabled = false;
+      bouton.textContent = 'Récupérer les données';
+    }
+  };
+
+  $('form-vide').onsubmit = async (e) => {
+    e.preventDefault();
+    const bouton = e.submitter;
+    bouton.disabled = true;
+    $('erreur-vide').textContent = '';
+    try {
+      await window.epsin.baseVide({ email: $('email').value, motDePasse: $('mdp').value });
+      bouton.textContent = 'Base créée. Ouverture d’EPSIN…';
+    } catch (err) {
+      $('erreur-vide').textContent = lisible(err);
+      bouton.disabled = false;
+    }
+  };
+</script>
+</body>
+</html>

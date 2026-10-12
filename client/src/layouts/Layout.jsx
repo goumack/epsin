@@ -6,6 +6,7 @@ import {
   Bell, Moon, Sun, School, UserCog, ShieldAlert, UserCheck,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import IndicateurSynchro from '../components/IndicateurSynchro';
 import { get, patch } from '../lib/api';
 
 /** Chaque entree declare les roles autorises a la voir. */
@@ -192,6 +193,8 @@ export default function Layout() {
           </h1>
 
           <div className="ml-auto flex items-center gap-1">
+            {/* Poste de l ecole uniquement : etat de la synchronisation */}
+            <IndicateurSynchro />
             <button
               onClick={marquerLues}
               className="relative rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"

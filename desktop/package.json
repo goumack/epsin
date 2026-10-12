@@ -1,0 +1,71 @@
+{
+  "name": "epsin-poste",
+  "productName": "EPSIN",
+  "version": "1.0.0",
+  "description": "EPSIN — poste de l'école : gestion scolaire hors ligne, synchronisée avec le site en ligne",
+  "author": "École Privée Sérigne Ibrahima Niang",
+  "type": "module",
+  "main": "main.mjs",
+  "private": true,
+  "scripts": {
+    "preparer": "node scripts/preparer.mjs",
+    "start": "npm run preparer && electron .",
+    "construire": "npm run preparer && electron-builder --win nsis --x64"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "embedded-postgres": "17.10.0-beta.17",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "pg": "^8.12.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "sn.epsin.poste",
+    "productName": "EPSIN",
+    "copyright": "École Privée Sérigne Ibrahima Niang",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.mjs",
+      "preload.cjs",
+      "accueil.html",
+      "serveur/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "interface",
+        "to": "interface"
+      },
+      {
+        "from": "icone.png",
+        "to": "icone.png"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "icone.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "EPSIN",
+      "artifactName": "EPSIN-Installation-${version}.exe"
+    },
+    "asar": false
+  }
+}

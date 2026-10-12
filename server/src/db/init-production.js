@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import { pathToFileURL } from 'node:url';
 import { pool } from './pool.js';
 
 /**
@@ -16,20 +17,20 @@ import { pool } from './pool.js';
  * Script idempotent : relancable sans rien dupliquer.
  */
 
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@epsin.sn';
-const ADMIN_MDP = process.env.ADMIN_MOT_DE_PASSE;
-
-async function initialiser() {
-  if (!ADMIN_MDP) {
-    console.error(
-      'ADMIN_MOT_DE_PASSE est obligatoire.\n'
-      + 'Exemple : ADMIN_MOT_DE_PASSE="VotreMotDePasseSolide" npm run init-production'
-    );
-    process.exit(1);
-  }
+/**
+ * Reutilisable : le programme Windows l appelle pour demarrer avec une base
+ * vide. Leve une erreur (sans quitter) si le mot de passe est trop faible.
+ * Ne ferme pas le pool.
+ */
+export async function initialiserBase({
+  adminEmail = 'admin@epsin.sn', adminMotDePasse, adminPrenom = 'Administrateur', adminNom = 'EPSIN',
+  journal = console.log,
+} = {}) {
+  const ADMIN_EMAIL = String(adminEmail).trim().toLowerCase();
+  const ADMIN_MDP = adminMotDePasse;
+  if (!ADMIN_MDP) throw new Error('Le mot de passe administrateur est obligatoire.');
   if (ADMIN_MDP.length < 10) {
-    console.error('Le mot de passe administrateur doit faire au moins 10 caracteres.');
-    process.exit(1);
+    throw new Error('Le mot de passe administrateur doit faire au moins 10 caracteres.');
   }
 
   const client = await pool.connect();
@@ -53,9 +54,9 @@ async function initialiser() {
           process.env.ETAB_IEF || 'IEF Dakar 1',
         ]
       );
-      console.log('  etablissement cree');
+      journal('  etablissement cree');
     } else {
-      console.log('  = etablissement deja present');
+      journal('  = etablissement deja present');
     }
 
     // ---------- Annee scolaire et trimestres ----------
@@ -73,7 +74,7 @@ async function initialiser() {
     let anneeId;
     if (annee.length) {
       anneeId = annee[0].id;
-      console.log(`  = annee ${libelleAnnee} deja presente`);
+      journal(`  = annee ${libelleAnnee} deja presente`);
     } else {
       const { rows } = await client.query(
         `INSERT INTO annee_scolaire (libelle, date_debut, date_fin, active)
@@ -81,7 +82,7 @@ async function initialiser() {
         [libelleAnnee, `${debut}-10-01`, `${debut + 1}-07-15`]
       );
       anneeId = rows[0].id;
-      console.log(`  annee ${libelleAnnee} creee`);
+      journal(`  annee ${libelleAnnee} creee`);
 
       for (const [libelle, ordre, d, f] of [
         ['1er trimestre', 1, `${debut}-10-01`, `${debut}-12-20`],
@@ -94,7 +95,7 @@ async function initialiser() {
           [anneeId, libelle, ordre, d, f]
         );
       }
-      console.log('  3 trimestres crees');
+      journal('  3 trimestres crees');
     }
 
     // ---------- Niveaux du systeme senegalais ----------
@@ -118,24 +119,24 @@ async function initialiser() {
       );
       nouveaux += rowCount;
     }
-    console.log(nouveaux ? `  ${nouveaux} niveaux crees` : '  = niveaux deja presents');
+    journal(nouveaux ? `  ${nouveaux} niveaux crees` : '  = niveaux deja presents');
 
     // ---------- Compte administrateur ----------
     const { rows: admin } = await client.query(
       `SELECT id FROM utilisateur WHERE email = $1`, [ADMIN_EMAIL]
     );
     if (admin.length) {
-      console.log(`  = compte ${ADMIN_EMAIL} deja present`);
+      journal(`  = compte ${ADMIN_EMAIL} deja present`);
     } else {
       const mdp = await bcrypt.hash(ADMIN_MDP, 10);
       await client.query(
         `INSERT INTO utilisateur (email, mot_de_passe, role, prenom, nom)
          VALUES ($1,$2,'admin',$3,$4)`,
         [ADMIN_EMAIL, mdp,
-         process.env.ADMIN_PRENOM || 'Administrateur',
-         process.env.ADMIN_NOM || 'EPSIN']
+         adminPrenom,
+         adminNom]
       );
-      console.log(`  compte administrateur cree : ${ADMIN_EMAIL}`);
+      journal(`  compte administrateur cree : ${ADMIN_EMAIL}`);
     }
 
     await client.query('COMMIT');
@@ -145,19 +146,26 @@ async function initialiser() {
               (SELECT COUNT(*)::int FROM utilisateur) AS comptes,
               (SELECT COUNT(*)::int FROM eleve) AS eleves`
     );
-    console.log('\nBase de production prete :');
-    console.log(`  ${bilan[0].niveaux} niveaux, ${bilan[0].comptes} compte(s), ${bilan[0].eleves} eleve(s)`);
-    console.log(`\nConnectez-vous avec ${ADMIN_EMAIL}, puis creez vos classes et vos comptes.`);
+    journal('\nBase de production prete :');
+    journal(`  ${bilan[0].niveaux} niveaux, ${bilan[0].comptes} compte(s), ${bilan[0].eleves} eleve(s)`);
+    journal(`\nConnectez-vous avec ${ADMIN_EMAIL}, puis creez vos classes et vos comptes.`);
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
   } finally {
     client.release();
-    await pool.end();
   }
 }
 
-initialiser().catch((err) => {
-  console.error('Echec de l initialisation :', err.message);
-  process.exit(1);
-});
+// Lance en ligne de commande : npm run init-production
+if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+  initialiserBase({
+    adminEmail: process.env.ADMIN_EMAIL || 'admin@epsin.sn',
+    adminMotDePasse: process.env.ADMIN_MOT_DE_PASSE,
+    adminPrenom: process.env.ADMIN_PRENOM || 'Administrateur',
+    adminNom: process.env.ADMIN_NOM || 'EPSIN',
+  }).then(() => pool.end()).catch((err) => {
+    console.error('Echec de l initialisation :', err.message);
+    process.exit(1);
+  });
+}
