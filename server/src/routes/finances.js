@@ -61,8 +61,12 @@ const cleFrais = (libelle) => String(libelle || '').normalize('NFD')
   .replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
 async function lireBareme() {
-  const { rows: an } = await query(`SELECT id, libelle FROM annee_scolaire WHERE active LIMIT 1`);
+  const { rows: an } = await query(
+    `SELECT id, libelle, date_debut, date_fin FROM annee_scolaire WHERE active LIMIT 1`
+  );
   if (!an[0]) return null;
+  // Annee active deja terminee : le bareme serait saisi sur la mauvaise annee
+  an[0].terminee = new Date(an[0].date_fin) < new Date();
   const { rows: niveaux } = await query(
     `SELECT id, libelle, cycle, entite, ordre FROM niveau ORDER BY ordre, libelle`
   );

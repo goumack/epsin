@@ -292,7 +292,8 @@ router.put('/:id', autoriser(...GESTION), async (req, res, next) => {
 });
 
 // Changement de classe (reaffectation)
-router.post('/:id/affecter', autoriser(...GESTION), async (req, res, next) => {
+// Le comptable, qui inscrit, peut aussi placer un eleve dans une classe
+router.post('/:id/affecter', autoriser(...GESTION, 'comptable'), async (req, res, next) => {
   try {
     const { classe_id } = req.body;
     const { rows: ar } = await query(`SELECT id FROM annee_scolaire WHERE active LIMIT 1`);

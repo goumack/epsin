@@ -1032,6 +1032,9 @@ function GrilleBareme() {
   };
 
   const enregistrer = async () => {
+    if (bareme.annee.terminee && !window.confirm(
+      `L'année active ${bareme.annee.libelle} est terminée. Enregistrer quand même le barème sur cette année passée ?`
+    )) return;
     setEnvoi(true);
     setAvertissements([]);
     try {
@@ -1085,6 +1088,19 @@ function GrilleBareme() {
           {envoi ? 'Enregistrement…' : 'Enregistrer'}
         </button>
       </div>
+
+      {bareme.annee.terminee && (
+        <div className="rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/40 p-3 text-sm text-red-700 dark:text-red-300">
+          <p className="font-semibold">
+            L'année active, {bareme.annee.libelle}, est terminée depuis le {dateFr(bareme.annee.date_fin)}.
+          </p>
+          <p className="mt-1">
+            Un barème enregistré ici s'appliquerait à cette année passée, et les mensualités d'un nouvel
+            élève apparaîtraient toutes en retard. Avant de saisir le barème : l'administrateur crée et
+            active la nouvelle année dans <strong>Paramètres → Années</strong>, puis crée les classes.
+          </p>
+        </div>
+      )}
 
       {avertissements.length > 0 && (
         <ul className="rounded-lg bg-amber-50 dark:bg-amber-950/40 p-3 text-sm text-amber-700 dark:text-amber-300">

@@ -32,6 +32,9 @@ export default function DossierEleve({ eleveId, onFermer }) {
     get(`/eleves/${eleveId}`).then(setEleve).catch((e) => setErreur(e.message));
   }, [eleveId]);
 
+  // Apres une affectation : relit le dossier sans vider l ecran
+  const recharger = () => get(`/eleves/${eleveId}`).then(setEleve).catch(() => {});
+
   useEffect(() => {
     get('/scolarite/periodes').then((p) => {
       setPeriodes(p);
@@ -77,7 +80,7 @@ export default function DossierEleve({ eleveId, onFermer }) {
             )}
           </div>
 
-          {onglet === 'infos' && <Informations eleve={eleve} />}
+          {onglet === 'infos' && <Informations eleve={eleve} onChange={recharger} />}
           {onglet === 'parcours' && <ParcoursEleve eleveId={eleveId} />}
           {onglet === 'bulletin' && <Bulletin eleveId={eleveId} periodeId={periodeId} />}
           {onglet === 'notes' && <DetailNotes eleveId={eleveId} periodeId={periodeId} />}
@@ -110,7 +113,9 @@ function EnTete({ eleve }) {
   );
 }
 
-function Informations({ eleve }) {
+function Informations({ eleve, onChange }) {
+  const { aRole } = useAuth();
+  const peutAffecter = aRole('admin', 'censeur', 'directeur', 'proviseur', 'comptable');
   const champs = [
     ['Matricule', eleve.matricule],
     ['Sexe', eleve.sexe === 'F' ? 'Fille' : eleve.sexe === 'M' ? 'Garçon' : '—'],
@@ -135,6 +140,8 @@ function Informations({ eleve }) {
           ))}
         </div>
       </div>
+
+      {peutAffecter && <AffectationClasse eleve={eleve} onChange={onChange} />}
 
       <div className="border-t border-slate-200 dark:border-slate-800 pt-4">
         <h3 className="mb-3 text-sm font-semibold text-slate-500">
@@ -162,6 +169,65 @@ function Informations({ eleve }) {
 
       {/* Visible de la seule direction : le serveur n envoie pas l info aux autres */}
       {eleve.compte_parent !== undefined && <CompteParent eleve={eleve} />}
+    </div>
+  );
+}
+
+/**
+ * Place l eleve dans une classe de l annee active : un eleve inscrit
+ * « a affecter plus tard », ou dont l inscription concerne une annee
+ * passee, apparait « Non affecte » tant que ce n est pas fait.
+ */
+function AffectationClasse({ eleve, onChange }) {
+  const [classes, setClasses] = useState([]);
+  const [choix, setChoix] = useState(eleve.classe_id ? String(eleve.classe_id) : '');
+  const [envoi, setEnvoi] = useState(false);
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    get('/scolarite/classes').then(setClasses).catch(() => setClasses([]));
+  }, []);
+
+  const affecter = async () => {
+    setEnvoi(true);
+    setMessage('');
+    try {
+      await post(`/eleves/${eleve.id}/affecter`, { classe_id: Number(choix) });
+      onChange?.();
+    } catch (e) {
+      setMessage(e.message);
+    } finally {
+      setEnvoi(false);
+    }
+  };
+
+  const nonAffecte = !eleve.classe_id;
+  return (
+    <div className={`rounded-lg border p-3 ${nonAffecte
+      ? 'border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/40'
+      : 'border-slate-200 dark:border-slate-800'}`}>
+      <p className="mb-2 text-sm">
+        {nonAffecte
+          ? <><strong>Non affecté</strong> à une classe de l'année en cours : choisissez sa classe.</>
+          : <>Classe de l'année en cours : <strong>{eleve.classe}</strong></>}
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <select className="champ w-auto min-w-[12rem]" value={choix} aria-label="Classe"
+                onChange={(e) => setChoix(e.target.value)}>
+          <option value="">— Choisir une classe —</option>
+          {classes.map((c) => (
+            <option key={c.id} value={c.id}>{c.libelle} ({c.effectif}/{c.capacite})</option>
+          ))}
+        </select>
+        <button type="button" className="bouton-primaire px-3 py-1.5"
+                disabled={envoi || !choix || choix === String(eleve.classe_id || '')} onClick={affecter}>
+          {envoi ? 'Affectation…' : nonAffecte ? 'Affecter' : 'Changer de classe'}
+        </button>
+      </div>
+      {classes.length === 0 && (
+        <p className="mt-2 text-xs text-slate-500">Aucune classe pour l'année en cours : créez-les d'abord (menu Classes).</p>
+      )}
+      {message && <p className="mt-2 text-sm text-red-600">{message}</p>}
     </div>
   );
 }

@@ -42,6 +42,15 @@ describe('Le comptable cree classes et eleves', () => {
     expect(r.body.compte_parent.mot_de_passe).toBeTruthy();
   });
 
+  it('place un eleve dans une classe (eleve non affecte, nouvelle annee)', async () => {
+    const r = await api('POST', `/api/eleves/${eleves[0]}/affecter`, COMPTES.comptable, {
+      classe_id: classes[0],
+    });
+    expect(r.status).toBe(200);
+    const dossier = await api('GET', `/api/eleves/${eleves[0]}`, COMPTES.comptable);
+    expect(dossier.body.classe_id).toBe(classes[0]);
+  });
+
   it('ne gere pas pour autant l equipe ni le professeur principal', async () => {
     expect((await api('PATCH', `/api/scolarite/classes/${classes[0]}/professeur-principal`,
       COMPTES.comptable, { utilisateur_id: null })).status).toBe(403);
