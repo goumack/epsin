@@ -56,7 +56,7 @@ export function BandeauRecu({ recu, onFermer }) {
         {recu.texte} — reçu <span className="font-mono">{recu.numero}</span>
       </p>
       <a href={`/recu/${recu.id}`} target="_blank" rel="noopener noreferrer" className="bouton-primaire px-3 py-1.5">
-        <Printer className="h-4 w-4" /> Imprimer le reçu
+        <Printer className="h-4 w-4" /> Imprimer ou envoyer le reçu
       </a>
       <button type="button" onClick={onFermer} className="text-xs underline">Fermer</button>
     </div>

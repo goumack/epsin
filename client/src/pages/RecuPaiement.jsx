@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { Printer, X } from 'lucide-react';
+import { MessageCircle, Printer, X } from 'lucide-react';
 import { get, fcfa, dateFr } from '../lib/api';
+import { lienWhatsApp, NUMERO_ENVOI } from '../lib/whatsapp';
+import { useAuth } from '../context/AuthContext';
 import { Chargement, Erreur } from '../components/ui';
 import { libelleMois } from '../components/PaiementWave';
 
@@ -9,6 +11,62 @@ const MODES = {
   especes: 'Espèces', wave: 'Wave', om: 'Orange Money',
   cheque: 'Chèque', virement: 'Virement',
 };
+
+/** Mois en toutes lettres, avec majuscule : « Oct. 2025 ». */
+const moisMaj = (m) => { const t = libelleMois(m); return t.charAt(0).toUpperCase() + t.slice(1); };
+
+/** Le recu en texte, pour WhatsApp : detail, total, situation de l eleve. */
+function messageRecu(recu, numero) {
+  const { etablissement: etab, eleve } = recu;
+  const ecole = etab?.nom || 'EPSIN';
+  const lignes = [
+    `Bonjour${eleve?.tuteur ? ` ${eleve.tuteur}` : ''},`,
+    '',
+    `${ecole} confirme le paiement reçu le ${dateFr(recu.date_paiement)} pour `
+      + `*${eleve?.prenom} ${eleve?.nom}*${eleve?.classe ? ` (${eleve.classe})` : ''} :`,
+    ...recu.lignes.filter((l) => !l.annule).map((l) =>
+      `• ${l.frais || 'Versement'}${l.mois ? ` — ${moisMaj(l.mois)}` : ''} : ${fcfa(l.montant)}`),
+    `*Total payé : ${fcfa(recu.total)}*`,
+    `Mode : ${MODES[recu.mode] || recu.mode}${recu.reference ? ` (réf. ${recu.reference})` : ''}`,
+    `Reçu N° ${numero}`,
+  ];
+  if (recu.situation) {
+    lignes.push('', "*Situation de l'élève*");
+    for (const m of recu.situation.mensualites) {
+      lignes.push(`${m.libelle} : ${m.regle_jusqu_a ? `réglée jusqu'à ${moisMaj(m.regle_jusqu_a)}` : 'aucun mois réglé'}`);
+    }
+    lignes.push(recu.situation.reste > 0
+      ? `Reste à payer à ce jour : ${fcfa(recu.situation.reste)}`
+      : 'À jour de ses paiements. Merci !');
+  }
+  lignes.push('', `${ecole}${etab?.telephone ? ` — ${etab.telephone}` : ''}`);
+  return lignes.join('\n');
+}
+
+/** Envoi du recu au tuteur par WhatsApp, depuis le compte de l ecole. */
+function EnvoiWhatsApp({ recu, numero }) {
+  const [telephone, setTelephone] = useState(recu.eleve?.tuteur_telephone || '');
+  const lien = lienWhatsApp(telephone, messageRecu(recu, numero));
+  return (
+    <div className="mx-auto mb-4 max-w-2xl px-4 print:hidden">
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+        <label htmlFor="wa-recu" className="text-sm font-medium text-slate-700">Envoyer au tuteur par WhatsApp :</label>
+        <input id="wa-recu" className="champ w-44" inputMode="tel" placeholder="77 123 45 67"
+               value={telephone} onChange={(e) => setTelephone(e.target.value)} />
+        <a href={lien || undefined} target="_blank" rel="noopener noreferrer" aria-disabled={!lien}
+           className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-white ${
+             lien ? 'bg-emerald-600 hover:bg-emerald-700' : 'pointer-events-none bg-slate-300'}`}>
+          <MessageCircle className="h-4 w-4" /> Envoyer par WhatsApp
+        </a>
+        <p className="w-full text-xs text-slate-500">
+          {telephone && !lien ? 'Numéro incomplet. ' : ''}
+          WhatsApp s'ouvre avec le reçu prêt : vérifiez qu'il s'agit du compte de l'école ({NUMERO_ENVOI}),
+          puis appuyez sur Envoyer.
+        </p>
+      </div>
+    </div>
+  );
+}
 
 /**
  * Recu de paiement imprimable, sur une page a part (ouverte dans un nouvel
@@ -22,6 +80,7 @@ export default function RecuPaiement() {
   const { id } = useParams();
   const [recu, setRecu] = useState(null);
   const [erreur, setErreur] = useState('');
+  const { aRole } = useAuth();
 
   useEffect(() => {
     get(`/finances/recus/${id}`)
@@ -50,6 +109,8 @@ export default function RecuPaiement() {
           <Printer className="h-4 w-4" /> Imprimer
         </button>
       </div>
+      {/* Le personnel envoie le recu ; le parent, lui, le consulte */}
+      {!recu.annule && aRole('admin', 'comptable') && <EnvoiWhatsApp recu={recu} numero={numero} />}
 
       <article className="recu relative mx-auto max-w-2xl overflow-hidden bg-white p-8 text-black shadow-sm print:max-w-none print:p-0 print:shadow-none">
         {recu.annule && (
