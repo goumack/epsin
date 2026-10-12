@@ -154,22 +154,37 @@ export function ModifierEleve({ eleve, ouvert, onFermer, onModifie }) {
 /**
  * Suppression d un eleve (administrateur) : retrait de l effectif, qui
  * conserve tout, ou suppression definitive d une inscription faite par
- * erreur — refusee par le serveur s il existe des paiements ou des notes.
+ * erreur. S il existe des paiements ou des notes, le serveur refuse, sauf
+ * demande expresse : l administrateur retape alors le matricule.
  */
 export function SupprimerEleve({ eleve, ouvert, onFermer, onArchive, onSupprime }) {
   const [envoi, setEnvoi] = useState(null);
   const [erreur, setErreur] = useState('');
+  // Paiements et notes a effacer avec l eleve, apres un premier refus
+  const [historique, setHistorique] = useState(null);
+  const [confirmation, setConfirmation] = useState('');
 
-  useEffect(() => { if (ouvert) { setErreur(''); setEnvoi(null); } }, [ouvert]);
+  useEffect(() => {
+    if (ouvert) { setErreur(''); setEnvoi(null); setHistorique(null); setConfirmation(''); }
+  }, [ouvert]);
 
-  const agir = async (definitif) => {
-    setEnvoi(definitif ? 'definitif' : 'archive');
+  const agir = async (mode) => {
+    setEnvoi(mode);
     setErreur('');
     try {
-      await supprimer(`/eleves/${eleve.id}${definitif ? '?definitif=1' : ''}`);
-      if (definitif) onSupprime(); else onArchive();
+      const suite = {
+        archive: '',
+        definitif: '?definitif=1',
+        historique: `?definitif=1&historique=1&confirmation=${encodeURIComponent(confirmation)}`,
+      }[mode];
+      await supprimer(`/eleves/${eleve.id}${suite}`);
+      if (mode === 'archive') onArchive(); else onSupprime();
     } catch (err) {
-      setErreur(err.message);
+      if (err.donnees?.code === 'ELEVE_AVEC_HISTORIQUE') {
+        setHistorique({ paiements: err.donnees.paiements, notes: err.donnees.notes });
+      } else {
+        setErreur(err.message);
+      }
     } finally {
       setEnvoi(null);
     }
@@ -189,7 +204,7 @@ export function SupprimerEleve({ eleve, ouvert, onFermer, onArchive, onSupprime 
               L'élève a quitté l'école : il disparaît des listes, son compte parent est désactivé,
               mais son dossier, ses notes et ses paiements sont conservés. Réversible.
             </p>
-            <button type="button" className="bouton-secondaire mt-2" disabled={Boolean(envoi)} onClick={() => agir(false)}>
+            <button type="button" className="bouton-secondaire mt-2" disabled={Boolean(envoi)} onClick={() => agir('archive')}>
               {envoi === 'archive' ? 'Retrait…' : "Retirer de l'effectif"}
             </button>
           </div>
@@ -201,10 +216,30 @@ export function SupprimerEleve({ eleve, ouvert, onFermer, onArchive, onSupprime 
               compte parent compris. Impossible si l'élève a déjà des paiements ou des notes.
             </p>
             <button type="button" className="bouton-danger mt-2" disabled={Boolean(envoi)}
-                    onClick={() => window.confirm(`Supprimer définitivement ${eleve.prenom} ${eleve.nom} ? Cette action est irréversible.`) && agir(true)}>
+                    onClick={() => window.confirm(`Supprimer définitivement ${eleve.prenom} ${eleve.nom} ? Cette action est irréversible.`) && agir('definitif')}>
               {envoi === 'definitif' ? 'Suppression…' : 'Supprimer définitivement'}
             </button>
           </div>
+
+          {historique && (
+            <div className="space-y-2 rounded-lg border-2 border-red-300 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950/30">
+              <p className="text-sm font-medium text-red-700 dark:text-red-400">
+                Cet élève a {historique.paiements} paiement(s) et {historique.notes} note(s).
+              </p>
+              <p className="text-sm text-slate-600 dark:text-slate-300">
+                S'il s'agit d'un essai ou d'une erreur, vous pouvez tout effacer : l'élève, ses paiements
+                et leurs reçus, ses notes, son compte parent. Les totaux de la caisse seront recalculés sans eux.
+                Irréversible. Pour confirmer, tapez le matricule <strong className="font-mono">{eleve.matricule}</strong> :
+              </p>
+              <input className="champ font-mono" value={confirmation} onChange={(e) => setConfirmation(e.target.value)}
+                     placeholder={eleve.matricule} aria-label="Matricule de l'élève" autoComplete="off" />
+              <button type="button" className="bouton-danger"
+                      disabled={Boolean(envoi) || confirmation.trim().toUpperCase() !== eleve.matricule.toUpperCase()}
+                      onClick={() => agir('historique')}>
+                {envoi === 'historique' ? 'Suppression…' : 'Tout supprimer définitivement'}
+              </button>
+            </div>
+          )}
 
           <Erreur message={erreur} />
         </div>

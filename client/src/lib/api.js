@@ -48,7 +48,9 @@ export async function api(chemin, options = {}) {
   const donnees = type.includes('application/json') ? await reponse.json() : null;
 
   if (!reponse.ok) {
-    throw new Error(donnees?.erreur || `Erreur ${reponse.status}`);
+    // Le detail de la reponse reste disponible (code, compteurs...)
+    throw Object.assign(new Error(donnees?.erreur || `Erreur ${reponse.status}`),
+      { status: reponse.status, donnees });
   }
   return donnees;
 }

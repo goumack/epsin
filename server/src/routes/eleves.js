@@ -490,10 +490,19 @@ router.delete('/:id', autoriser('admin'), async (req, res, next) => {
                 (SELECT COUNT(*)::int FROM note WHERE eleve_id = $1) AS notes`,
         [req.params.id]
       );
-      if (traces[0].paiements || traces[0].notes) {
+      // Paiements ou notes : effaces aussi seulement sur demande expresse,
+      // matricule retape (donnees d essai, eleve saisi par erreur et deja
+      // encaisse). Sinon, l archivage reste la voie normale.
+      const historique = traces[0].paiements || traces[0].notes;
+      const confirme = req.query.historique === '1'
+        && String(req.query.confirmation || '').trim().toUpperCase() === el[0].matricule.toUpperCase();
+      if (historique && !confirme) {
         return res.status(409).json({
           erreur: `Suppression definitive impossible : ${traces[0].paiements} paiement(s) et `
             + `${traces[0].notes} note(s) seraient perdus. Retirez plutot l eleve de l effectif (archivage).`,
+          code: 'ELEVE_AVEC_HISTORIQUE',
+          paiements: traces[0].paiements,
+          notes: traces[0].notes,
         });
       }
       await transaction(async (client) => {
@@ -509,8 +518,10 @@ router.delete('/:id', autoriser('admin'), async (req, res, next) => {
           );
         }
       });
-      await tracer(req, 'suppression_definitive', 'eleve', el[0].id,
-        { matricule: el[0].matricule, nom: `${el[0].prenom} ${el[0].nom}` });
+      await tracer(req, 'suppression_definitive', 'eleve', el[0].id, {
+        matricule: el[0].matricule, nom: `${el[0].prenom} ${el[0].nom}`,
+        ...(historique ? { paiements_supprimes: traces[0].paiements, notes_supprimees: traces[0].notes } : {}),
+      });
       return res.json({ message: 'Eleve supprime definitivement' });
     }
 
