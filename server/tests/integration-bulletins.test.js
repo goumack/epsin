@@ -25,7 +25,7 @@ describe('Structure du bulletin officiel', () => {
   it('porte l en-tete administratif du modele senegalais', () => {
     expect(bulletin.etablissement.inspection_academie).toBeTruthy();
     expect(bulletin.etablissement.inspection_ief).toBeTruthy();
-    expect(bulletin.etablissement.nom).toContain('Serighe Ibrahima Niang');
+    expect(bulletin.etablissement.nom).toContain('Serigne Ibrahima Niang');
   });
 
   it('separe Devoir et Composition comme le modele officiel', () => {
