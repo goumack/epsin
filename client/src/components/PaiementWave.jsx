@@ -15,6 +15,8 @@ const STATUTS_MOIS = {
   partiel: { ton: 'alerte', texte: 'Partiel' },
   en_retard: { ton: 'danger', texte: 'À régler' },
   a_venir: { ton: 'neutre', texte: 'À venir' },
+  // Couvert par un paiement Wave declare, que l etablissement verifie
+  en_verification: { ton: 'info', texte: 'En vérification' },
 };
 
 export const STATUTS_PAIEMENT = {
@@ -56,7 +58,7 @@ export function MensualitesWave({ onPaye, onErreur }) {
       const fraiches = await get('/paiements-en-ligne/mensualites');
       setDonnees(fraiches);
       const f = fraiches.frais.find((x) => x.id === fraisId);
-      if (f && f.mois.some((m) => m.statut !== 'paye')) setFraisChoisi(f);
+      if (f && f.mois.some((m) => Number(m.reste_du) > 0)) setFraisChoisi(f);
     } catch (err) {
       onErreur?.(err.message);
     }
@@ -73,7 +75,7 @@ export function MensualitesWave({ onPaye, onErreur }) {
         </p>
       )}
       {donnees.frais.map((f) => {
-        const aRegler = f.mois.filter((m) => m.statut !== 'paye');
+        const aRegler = f.mois.filter((m) => Number(m.reste_du) > 0);
         const enRetard = f.mois.filter((m) => m.statut === 'en_retard' || m.statut === 'partiel');
         return (
           <div key={f.id} className="carte p-4 space-y-3">
@@ -206,7 +208,7 @@ function ModalePaiementWave({ frais, mode, onFermer, onPaye, onErreur }) {
 
   if (!frais) return null;
 
-  const aRegler = frais.mois.filter((m) => m.statut !== 'paye');
+  const aRegler = frais.mois.filter((m) => Number(m.reste_du) > 0);
   // Borne le choix aux mois reellement restants : un nombre memorise d une
   // ouverture precedente ne doit jamais partir vers le serveur. Ce qui est
   // affiche et ce qui est envoye viennent de la meme valeur.

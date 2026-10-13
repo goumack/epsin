@@ -350,7 +350,9 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
       : Math.round(Number(c.montant)) || 0;
     return { l, c, mensuel, aRegler, nb, montant };
   });
-  const cochees = lignes.filter((x) => x.c.coche);
+  // Un frais deja entierement regle n est jamais encaisse
+  const cochees = lignes.filter((x) => x.c.coche
+    && (x.mensuel ? x.aRegler.length > 0 : Number(x.l.reste) > 0));
   const total = cochees.reduce((s, x) => s + x.montant, 0);
 
   const soumettre = async (ev) => {
@@ -442,11 +444,15 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
             <div>
               <p className="etiquette">Frais à encaisser</p>
               <ul className="divide-y divide-slate-100 dark:divide-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
-                {lignes.map(({ l, c, mensuel, aRegler, nb, montant }) => (
-                  <li key={l.id} className="space-y-2 px-3 py-2">
+                {lignes.map(({ l, c, mensuel, aRegler, nb, montant }) => {
+                  // Deja tout regle : rien a encaisser, la case est bloquee
+                  const regle = mensuel ? aRegler.length === 0 : Number(l.reste) <= 0;
+                  const resteAnnee = aRegler.reduce((s, m) => s + Number(m.reste_du), 0);
+                  return (
+                  <li key={l.id} className={`space-y-2 px-3 py-2 ${regle ? 'opacity-60' : ''}`}>
                     <div className="flex flex-wrap items-center gap-2">
                       <label className="flex min-w-0 flex-1 items-center gap-2 text-sm">
-                        <input type="checkbox" checked={Boolean(c.coche)}
+                        <input type="checkbox" checked={Boolean(c.coche) && !regle} disabled={regle}
                                onChange={(e) => maj(l.id, 'coche', e.target.checked)} />
                         <span className="font-medium">{l.libelle}</span>
                         {mensuel && <span className="text-xs text-slate-500">{fcfa(l.montant)} / mois</span>}
@@ -456,13 +462,20 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
                           ? (aRegler.length ? `${aRegler.length} mois à régler` : 'Année réglée')
                           : (Number(l.reste) > 0 ? `Reste ${fcfa(l.reste)}` : 'Réglé')}
                       </span>
-                      {c.coche && !mensuel && (
-                        <input type="number" min="1" className="champ w-28 py-1 text-right tabular-nums"
+                      {c.coche && !regle && !mensuel && (
+                        <input type="number" min="1" max={Math.round(Number(l.reste))}
+                               className="champ w-28 py-1 text-right tabular-nums"
                                aria-label={`Montant — ${l.libelle}`}
                                value={c.montant} onChange={(e) => maj(l.id, 'montant', e.target.value)} />
                       )}
                     </div>
 
+                    {mensuel?.en_verification > 0 && (
+                      <p className="pl-6 text-xs text-amber-700 dark:text-amber-400">
+                        Le parent a déclaré {fcfa(mensuel.en_verification)} par Wave, en attente de vérification :
+                        validez-le ou rejetez-le (onglet Paiements Wave) avant d'encaisser ces mois.
+                      </p>
+                    )}
                     {c.coche && mensuel && aRegler.length > 0 && (
                       <div className="space-y-2 pl-6">
                         <div className="flex gap-1 rounded-lg bg-slate-100 dark:bg-slate-800 p-1" role="tablist">
@@ -473,9 +486,14 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
                         </div>
                         {c.libre ? (
                           <>
-                            <input type="number" min="1" className="champ py-1 tabular-nums"
+                            <input type="number" min="1" max={resteAnnee} className="champ py-1 tabular-nums"
                                    aria-label={`Montant versé — ${l.libelle}`}
                                    value={c.montant} onChange={(e) => maj(l.id, 'montant', e.target.value)} />
+                            {montant > resteAnnee && (
+                              <p className="text-xs text-red-600">
+                                Il ne reste que {fcfa(resteAnnee)} à payer sur l'année.
+                              </p>
+                            )}
                             <ul className="space-y-0.5 text-xs text-slate-500">
                               {ventiler(aRegler, montant).map((a) => (
                                 <li key={a.mois} className="flex justify-between">
@@ -514,7 +532,8 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
                       </div>
                     )}
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             </div>
           )
@@ -708,23 +727,28 @@ function VerificationWave() {
 function ModaleValidationWave({ paiement, onFermer, onFait, onErreur }) {
   const [f, setF] = useState({ transaction_id: '', montant_recu: '' });
   const [envoi, setEnvoi] = useState(false);
+  // Mois regles entre-temps : la caisse choisit, rejeter ou garder en avance
+  const [tropPercu, setTropPercu] = useState('');
 
   useEffect(() => {
     if (paiement) {
       setF({ transaction_id: paiement.transaction_id || '', montant_recu: String(Math.round(paiement.montant)) });
+      setTropPercu('');
     }
   }, [paiement]);
 
-  const valider = async (e) => {
-    e.preventDefault();
+  const valider = async (e, forcer = false) => {
+    e?.preventDefault();
     setEnvoi(true);
     try {
       onFait(await post(`/paiements-en-ligne/${paiement.id}/valider`, {
         transaction_id: f.transaction_id.trim(),
         montant_recu: Number(f.montant_recu),
+        forcer,
       }));
     } catch (err) {
-      onErreur(err.message);
+      if (err.donnees?.code === 'TROP_PERCU') setTropPercu(err.message);
+      else onErreur(err.message);
     } finally {
       setEnvoi(false);
     }
@@ -753,9 +777,17 @@ function ModaleValidationWave({ paiement, onFermer, onFait, onErreur }) {
               </p>
             )}
           </div>
+          {tropPercu && (
+            <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+              <p>{tropPercu}</p>
+              <button type="button" className="bouton-secondaire" disabled={envoi} onClick={() => valider(null, true)}>
+                Valider quand même (excédent en avance)
+              </button>
+            </div>
+          )}
           <div className="flex justify-end gap-2 border-t border-slate-200 dark:border-slate-800 pt-3">
             <button type="button" className="bouton-secondaire" onClick={onFermer}>Annuler</button>
-            <button type="submit" className="bouton-primaire" disabled={envoi}>
+            <button type="submit" className="bouton-primaire" disabled={envoi || Boolean(tropPercu)}>
               {envoi ? 'Validation…' : 'Valider et créer les reçus'}
             </button>
           </div>

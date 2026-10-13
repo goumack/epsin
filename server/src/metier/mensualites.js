@@ -107,9 +107,31 @@ export function resteExigible(etat, maintenant = new Date()) {
   return etat.filter((e) => e.mois <= courant).reduce((s, e) => s + e.reste_du, 0);
 }
 
+/** Reste a payer sur toute l annee (mois a venir compris). */
+export function resteAnnee(etat) {
+  return etat.reduce((s, e) => s + e.reste_du, 0);
+}
+
+/**
+ * Etat tenant compte des sommes declarees par Wave et pas encore verifiees
+ * par la caisse : elles soldent les mois dans l ordre, comme le fera la
+ * validation. Un mois ainsi couvert passe « en_verification » : on ne le
+ * propose plus, ni au parent ni au guichet, pour ne pas le payer deux fois.
+ */
+export function deduireEnCours(etat, montantEnCours) {
+  let libre = Number(montantEnCours) || 0;
+  return etat.map((e) => {
+    if (libre <= 0 || e.reste_du <= 0) return e;
+    const part = Math.min(libre, e.reste_du);
+    libre -= part;
+    const reste = e.reste_du - part;
+    return { ...e, reste_du: reste, en_verification: part, statut: reste === 0 ? 'en_verification' : e.statut };
+  });
+}
+
 /** Mois non regles, dans l ordre de paiement : le dernier d abord si demande. */
 function moisARegler(etat, dernierDabord) {
-  const aRegler = etat.filter((e) => e.statut !== 'paye');
+  const aRegler = etat.filter((e) => e.reste_du > 0);
   return dernierDabord && aRegler.length ? [aRegler.at(-1), ...aRegler.slice(0, -1)] : aRegler;
 }
 

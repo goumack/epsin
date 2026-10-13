@@ -97,11 +97,17 @@ describe('Avance de plusieurs mois au guichet', () => {
   });
 
   it('un frais ponctuel reste une seule ecriture', async () => {
+    // Un frais encore du : un frais deja solde ne s encaisse plus
     const { rows } = await query(
-      `SELECT id FROM frais WHERE annee_id = $1 AND NOT recurrent LIMIT 1`, [ctx.anneeId]
+      `SELECT f.id, f.montant - COALESCE((SELECT SUM(p.montant) FROM paiement p
+                WHERE p.eleve_id = $2 AND p.frais_id = f.id AND NOT p.annule), 0) AS reste
+       FROM frais f WHERE f.annee_id = $1 AND NOT f.recurrent AND f.montant > 0
+       ORDER BY reste DESC LIMIT 1`,
+      [ctx.anneeId, ctx.eleveCI.id]
     );
+    if (!rows[0] || Number(rows[0].reste) <= 0) return;
     const r = await api('POST', '/api/finances/paiements', COMPTES.comptable, {
-      eleve_id: ctx.eleveCI.id, frais_id: rows[0].id, montant: 1000, mode: 'especes',
+      eleve_id: ctx.eleveCI.id, frais_id: rows[0].id, montant: Math.min(1000, Number(rows[0].reste)), mode: 'especes',
     });
     expect(r.status).toBe(201);
     lots.push(r.body.id);

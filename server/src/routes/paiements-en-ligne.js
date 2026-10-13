@@ -5,6 +5,7 @@ import { eleveSuivi, estTuteur } from '../middleware/portee-tuteur.js';
 import { prochainNumeroRecu } from '../db/recus.js';
 import {
   moisDeLAnnee, moisDuFrais, moisCourant, etatDesMois, montantPourMois, ventilerVersement,
+  deduireEnCours, resteAnnee,
 } from '../metier/mensualites.js';
 import {
   waveConfigure, modePaiement, lienAvecMontant,
@@ -104,7 +105,7 @@ async function mensualitesDe(eleveId, anneeId = null, db = { query }) {
  * montant attendu — l ecart est alors signale.
  */
 export async function confirmerPaiement(id, {
-  transactionId = null, montantRecu = null, verifiePar = null,
+  transactionId = null, montantRecu = null, verifiePar = null, forcer = true,
 } = {}) {
   return transaction(async (client) => {
     const { rows } = await client.query(
@@ -113,6 +114,8 @@ export async function confirmerPaiement(id, {
     const pel = rows[0];
     if (!pel) return null;
     if (pel.statut === 'reussi') return { pel, deja: true };
+    // Meme verrou que le guichet : pas d encaissement simultane pour l eleve
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext('epsin_paiement'), $1)`, [pel.eleve_id]);
 
     const versement = montantRecu != null ? Number(montantRecu) : Number(pel.montant);
     const ecart = Math.round(versement) !== Math.round(Number(pel.montant))
@@ -127,6 +130,20 @@ export async function confirmerPaiement(id, {
     const lignes = f
       ? ventilerVersement(f.mois, versement)
       : [{ mois: null, montant: versement }];
+
+    // Des mois ont ete regles entre-temps (au guichet, par exemple) : une
+    // partie de l argent ne couvre plus aucun mois. La caisse decide —
+    // rejeter et rembourser, ou garder l excedent en avance. Le paiement
+    // confirme par Wave lui-meme (mode api) est toujours enregistre : l argent
+    // est deja sur le compte de l ecole.
+    const excedent = f ? lignes.filter((l) => !l.mois).reduce((t, l) => t + l.montant, 0) : 0;
+    if (excedent > 0 && !forcer) {
+      throw Object.assign(new Error(
+        `Les mois de ${f.libelle} ont été réglés entre-temps : ${Math.round(excedent).toLocaleString('fr-FR')} F `
+        + 'de ce paiement ne couvriraient aucun mois. Rejetez-le (et remboursez le parent), '
+        + "ou validez quand même : l'excédent sera enregistré comme avance."
+      ), { status: 409, code: 'TROP_PERCU', excedent });
+    }
 
     const recus = [];
     for (const l of lignes) {
@@ -260,10 +277,10 @@ router.get('/mensualites', autoriser('parent'), async (req, res, next) => {
       annee: annee
         ? { id: annee.id, libelle: annee.libelle, terminee: mois.length > 0 && moisCourant() > mois.at(-1) }
         : null,
-      frais: frais.map((f) => ({
-        ...f,
-        en_verification: Number(enCours.find((x) => x.frais_id === f.id)?.montant || 0),
-      })),
+      frais: frais.map((f) => {
+        const enVerification = Number(enCours.find((x) => x.frais_id === f.id)?.montant || 0);
+        return { ...f, en_verification: enVerification, mois: deduireEnCours(f.mois, enVerification) };
+      }),
       wave: { disponible: mode != null, mode },
     });
   } catch (err) { next(err); }
@@ -281,8 +298,23 @@ router.post('/wave', autoriser('parent'), async (req, res, next) => {
 
     const fraisId = Number(req.body.frais_id);
     const { annee, frais } = await mensualitesDe(eleveId);
-    const f = frais.find((x) => x.id === fraisId);
-    if (!f) return res.status(404).json({ erreur: 'Mensualite introuvable pour cet eleve' });
+    const trouve = frais.find((x) => x.id === fraisId);
+    if (!trouve) return res.status(404).json({ erreur: 'Mensualite introuvable pour cet eleve' });
+    // Une declaration encore en verification couvre deja ses mois : le
+    // parent ne doit pas pouvoir les payer une seconde fois
+    const { rows: [enCours] } = await query(
+      `SELECT COALESCE(SUM(montant), 0)::numeric AS n FROM paiement_en_ligne
+       WHERE eleve_id = $1 AND frais_id = $2 AND statut = 'a_verifier'`,
+      [eleveId, fraisId]
+    );
+    const f = { ...trouve, mois: deduireEnCours(trouve.mois, Number(enCours.n)) };
+    if (resteAnnee(f.mois) <= 0) {
+      return res.status(409).json({
+        erreur: Number(enCours.n) > 0
+          ? 'Tous les mois restants sont couverts par un paiement en cours de verification par l etablissement'
+          : 'Tous les mois de l annee sont deja regles',
+      });
+    }
 
     // Deux facons de payer : un nombre de mois complets, ou un montant libre
     // (avance sur un mois, quand le parent ne peut pas tout regler d un coup).
@@ -293,13 +325,13 @@ router.post('/wave', autoriser('parent'), async (req, res, next) => {
     const montantLibre = req.body.montant != null && req.body.montant !== ''
       ? Number(req.body.montant) : null;
     if (montantLibre != null) {
-      const resteAnnee = f.mois.reduce((s, m) => s + m.reste_du, 0);
+      const reste = resteAnnee(f.mois);
       if (!Number.isInteger(montantLibre) || montantLibre < 1) {
         return res.status(400).json({ erreur: 'Montant invalide : un nombre entier de FCFA' });
       }
-      if (montantLibre > resteAnnee) {
+      if (montantLibre > reste) {
         return res.status(400).json({
-          erreur: `Le montant depasse le reste a payer de l annee (${resteAnnee} FCFA)`,
+          erreur: `Le montant depasse le reste a payer de l annee (${reste} FCFA)`,
         });
       }
       montant = montantLibre;
@@ -434,8 +466,13 @@ router.post('/:id/valider', autoriser(...CAISSE), async (req, res, next) => {
     }
 
     try {
-      await confirmerPaiement(pel.id, { transactionId, montantRecu, verifiePar: req.user.id });
+      await confirmerPaiement(pel.id, {
+        transactionId, montantRecu, verifiePar: req.user.id, forcer: req.body.forcer === true,
+      });
     } catch (err) {
+      if (err.code === 'TROP_PERCU') {
+        return res.status(409).json({ erreur: err.message, code: err.code, excedent: err.excedent });
+      }
       if (err.code === '23505') {
         return res.status(409).json({ erreur: 'Cette transaction Wave a deja servi a un autre paiement' });
       }

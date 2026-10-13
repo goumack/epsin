@@ -6,7 +6,7 @@ import { prochainNumeroRecu } from '../db/recus.js';
 import { montantEnLettres } from '../metier/montant-lettres.js';
 import {
   moisDeLAnnee, moisDuFrais, nbMoisExigibles, etatDesMois, resteExigible,
-  montantPourMois, ventilerVersement,
+  montantPourMois, ventilerVersement, resteAnnee,
 } from '../metier/mensualites.js';
 
 const router = Router();
@@ -202,6 +202,59 @@ router.put('/bareme', autoriser(...CAISSE), async (req, res, next) => {
 });
 
 // ---------- Paiements ----------
+
+/** Montant lisible dans un message : 10 000 F. */
+const enFrancs = (n) => `${Math.round(Number(n)).toLocaleString('fr-FR')} F`;
+const refus = (message) => Object.assign(new Error(message), { status: 409 });
+
+/** Sommes declarees par Wave par le parent, que la caisse n a pas encore verifiees. */
+export async function montantEnVerification(db, eleveId, fraisId) {
+  const { rows } = await db.query(
+    `SELECT COALESCE(SUM(montant), 0)::numeric AS n FROM paiement_en_ligne
+     WHERE eleve_id = $1 AND frais_id = $2 AND statut = 'a_verifier'`,
+    [eleveId, fraisId]
+  );
+  return Number(rows[0].n);
+}
+
+/**
+ * Controles avant d encaisser un frais, dans la transaction (l eleve est
+ * verrouille) : rien ne se paie deux fois.
+ *   - frais unique (droit d inscription, blouse...) : pas au-dela de son
+ *     montant ;
+ *   - mensualite : pas au-dela de ce qui reste sur l annee, et pas un mois
+ *     que le parent vient de declarer par Wave sans verification.
+ * Leve une erreur 409 au message pret a afficher.
+ */
+async function controlerEncaissement(client, eleveId, p) {
+  if (!p.fraisId) return;
+  if (p.mensuel) {
+    const { etat } = await echeancier(eleveId, p.fraisId, client);
+    const reste = resteAnnee(etat);
+    if (reste <= 0) throw refus(`${p.libelle} : toute l'année est déjà réglée`);
+    if (p.montant > reste) {
+      const n = etat.filter((e) => e.reste_du > 0).length;
+      throw refus(`${p.libelle} : il ne reste que ${enFrancs(reste)} à payer sur l'année (${n} mois)`);
+    }
+    const enCours = await montantEnVerification(client, eleveId, p.fraisId);
+    if (enCours > 0 && p.montant > reste - enCours) {
+      throw refus(`${p.libelle} : le parent a déclaré un paiement Wave de ${enFrancs(enCours)} qui attend `
+        + "votre vérification (Finances → Paiements Wave). Validez-le ou rejetez-le avant d'encaisser ces mois.");
+    }
+    return;
+  }
+  const { rows } = await client.query(
+    `SELECT f.montant, COALESCE((SELECT SUM(p.montant) FROM paiement p
+              WHERE p.eleve_id = $1 AND p.frais_id = f.id AND p.annee_id = f.annee_id AND NOT p.annule), 0) AS paye
+     FROM frais f WHERE f.id = $2`,
+    [eleveId, p.fraisId]
+  );
+  const reste = Number(rows[0].montant) - Number(rows[0].paye);
+  if (reste <= 0) throw refus(`${p.libelle} : déjà réglé (${enFrancs(rows[0].paye)} payés)`);
+  if (p.montant > reste) {
+    throw refus(`${p.libelle} : il ne reste que ${enFrancs(reste)} à payer (déjà payé : ${enFrancs(rows[0].paye)})`);
+  }
+}
 router.get('/paiements', autoriser(...CAISSE, 'censeur'), async (req, res, next) => {
   try {
     const { eleve_id, du, au, mode, page = 1, taille = 30 } = req.query;
@@ -283,7 +336,12 @@ router.get('/echeancier/:eleveId', autoriser(...CAISSE), async (req, res, next) 
     const resultat = [];
     for (const f of frais) {
       const e = await echeancier(Number(req.params.eleveId), f.id);
-      if (e) resultat.push({ id: e.id, libelle: e.libelle, montant: e.montant, paye: e.paye, mois: e.etat });
+      if (e) {
+        resultat.push({
+          id: e.id, libelle: e.libelle, montant: e.montant, paye: e.paye, mois: e.etat,
+          en_verification: await montantEnVerification({ query }, Number(req.params.eleveId), e.id),
+        });
+      }
     }
     res.json(resultat);
   } catch (err) { next(err); }
@@ -346,6 +404,10 @@ router.post('/paiements', autoriser(...CAISSE), async (req, res, next) => {
     }
 
     const lignes = await transaction(async (client) => {
+      // Un encaissement a la fois par eleve : deux caisses ne peuvent pas
+      // regler le meme mois en meme temps
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext('epsin_paiement'), $1)`, [Number(eleve_id)]);
+      for (const p of prepares) await controlerEncaissement(client, Number(eleve_id), p);
       const creees = [];
       for (const p of prepares) {
         // Echeancier releve dans la transaction : un encaissement concurrent
