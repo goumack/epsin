@@ -445,6 +445,30 @@ router.patch('/:id/redoublant', autoriser(...GESTION), async (req, res, next) =>
 });
 
 /**
+ * Cas social : l eleve est pris en charge par l etablissement et n a
+ * l obligation de payer aucun frais. Decision de l administrateur, motif
+ * obligatoire, tracee. Ce que verse ensuite l eleve est classe en
+ * « Autres recettes ».
+ */
+router.patch('/:id/cas-social', autoriser('admin'), async (req, res, next) => {
+  try {
+    const casSocial = req.body.cas_social === true;
+    const motif = String(req.body.motif || '').trim() || null;
+    if (casSocial && !motif) {
+      return res.status(400).json({ erreur: 'Indiquez le motif de la prise en charge' });
+    }
+    const { rows } = await query(
+      `UPDATE eleve SET cas_social = $2, cas_social_motif = $3 WHERE id = $1
+       RETURNING id, cas_social, cas_social_motif`,
+      [req.params.id, casSocial, casSocial ? motif : null]
+    );
+    if (!rows[0]) return res.status(404).json({ erreur: 'Eleve introuvable' });
+    await tracer(req, casSocial ? 'cas_social' : 'fin_cas_social', 'eleve', rows[0].id, { motif });
+    res.json(rows[0]);
+  } catch (err) { next(err); }
+});
+
+/**
  * Fiche d acces parent : cree le compte s il manque (eleve inscrit avant
  * cette fonction), sinon attribue un nouveau mot de passe temporaire
  * (fiche perdue, parent bloque). L ancien mot de passe cesse de marcher.

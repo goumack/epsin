@@ -125,7 +125,7 @@ export default function DossierEleve({ eleveId, onFermer, onChange }) {
           {onglet === 'bulletin' && <Bulletin eleveId={eleveId} periodeId={periodeId} />}
           {onglet === 'notes' && <DetailNotes eleveId={eleveId} periodeId={periodeId} />}
           {onglet === 'assiduite' && <Assiduite eleveId={eleveId} />}
-          {onglet === 'finances' && voitFinances && <Finances eleveId={eleveId} />}
+          {onglet === 'finances' && voitFinances && <Finances eleveId={eleveId} onChange={recharger} />}
         </div>
       )}
     </Modale>
@@ -148,6 +148,7 @@ function EnTete({ eleve }) {
       <div className="ml-auto flex flex-wrap gap-1.5">
         {eleve.classe ? <Puce ton="info">{eleve.classe}</Puce> : <Puce>Non affecté</Puce>}
         <Puce ton={eleve.statut === 'actif' ? 'succes' : 'neutre'}>{eleve.statut}</Puce>
+        {eleve.cas_social && <Puce ton="alerte">Cas social</Puce>}
       </div>
     </div>
   );
@@ -562,7 +563,76 @@ function Assiduite({ eleveId }) {
   );
 }
 
-function Finances({ eleveId }) {
+/**
+ * Cas social (administrateur) : l eleve est pris en charge par
+ * l etablissement et n a l obligation de payer aucun frais.
+ */
+function CasSocial({ eleve, onChange }) {
+  const { aRole } = useAuth();
+  const admin = aRole('admin');
+  const [edition, setEdition] = useState(false);
+  const [motif, setMotif] = useState('');
+  const [envoi, setEnvoi] = useState(false);
+  const [erreur, setErreur] = useState('');
+
+  const enregistrer = async (casSocial) => {
+    setEnvoi(true);
+    setErreur('');
+    try {
+      await patch(`/eleves/${eleve.id}/cas-social`, { cas_social: casSocial, motif });
+      setEdition(false);
+      onChange();
+    } catch (e) { setErreur(e.message); } finally { setEnvoi(false); }
+  };
+
+  if (eleve.cas_social) {
+    return (
+      <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+        <p>
+          <strong>Cas social</strong> : scolarité prise en charge par l'établissement, aucun frais n'est dû.
+          {eleve.cas_social_motif && <> Motif : {eleve.cas_social_motif}.</>}
+        </p>
+        <p className="mt-1 text-xs">Toute somme versée par cet élève est classée en « Autres recettes ».</p>
+        {admin && (
+          <button type="button" className="mt-2 text-xs underline" disabled={envoi}
+                  onClick={() => window.confirm("Retirer le statut de cas social ? L'élève devra de nouveau ses frais.")
+                    && enregistrer(false)}>
+            Retirer le statut de cas social
+          </button>
+        )}
+        <Erreur message={erreur} />
+      </div>
+    );
+  }
+  if (!admin) return null;
+  return edition ? (
+    <div className="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800">
+      <label className="etiquette" htmlFor="motif-cas-social">Motif de la prise en charge *</label>
+      <input id="motif-cas-social" className="champ" value={motif} onChange={(e) => setMotif(e.target.value)}
+             placeholder="Ex. : orphelin, famille en difficulté…" />
+      <p className="text-xs text-slate-500">
+        L'élève ne devra plus aucun frais : il sort des impayés et des relances. Ce qu'il verse sera classé en
+        « Autres recettes ».
+      </p>
+      <div className="flex justify-end gap-2">
+        <button type="button" className="bouton-secondaire" onClick={() => setEdition(false)}>Annuler</button>
+        <button type="button" className="bouton-primaire" disabled={envoi || !motif.trim()}
+                onClick={() => enregistrer(true)}>
+          {envoi ? 'Enregistrement…' : 'Déclarer cas social'}
+        </button>
+      </div>
+      <Erreur message={erreur} />
+    </div>
+  ) : (
+    <div className="text-right">
+      <button type="button" className="text-xs text-slate-500 underline" onClick={() => { setMotif(''); setEdition(true); }}>
+        Déclarer cet élève cas social (dispensé de paiement)
+      </button>
+    </div>
+  );
+}
+
+function Finances({ eleveId, onChange }) {
   const { aRole } = useAuth();
   const caisse = aRole('admin', 'comptable');
   const [situation, setSituation] = useState(null);
@@ -592,6 +662,7 @@ function Finances({ eleveId }) {
 
   return (
     <div className="space-y-4">
+      <CasSocial eleve={situation.eleve} onChange={() => { charger(); onChange?.(); }} />
       {caisse && (
         <div className="flex flex-wrap items-center justify-end gap-2">
           {inscriptionDue && (

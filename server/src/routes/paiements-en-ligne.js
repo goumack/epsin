@@ -49,11 +49,14 @@ async function mensualitesDe(eleveId, anneeId = null, db = { query }) {
   if (!an[0]) return { annee: null, mois: [], frais: [] };
 
   const { rows: insc } = await db.query(
-    `SELECT c.niveau_id FROM inscription i JOIN classe c ON c.id = i.classe_id
+    `SELECT c.niveau_id, e.cas_social FROM inscription i
+     JOIN classe c ON c.id = i.classe_id JOIN eleve e ON e.id = i.eleve_id
      WHERE i.eleve_id = $1 AND i.annee_id = $2`,
     [eleveId, an[0].id]
   );
   if (!insc[0]) return { annee: an[0], mois: [], frais: [] };
+  // Cas social : aucune mensualite due, rien a payer en ligne
+  if (insc[0].cas_social) return { annee: an[0], mois: [], frais: [], cas_social: true };
 
   const { rows: frais } = await db.query(
     `SELECT f.id, f.libelle, f.montant, f.mois_fin,
@@ -150,8 +153,9 @@ export async function confirmerPaiement(id, {
       const numero = await prochainNumeroRecu(client);
       await client.query(
         `INSERT INTO paiement (eleve_id, frais_id, annee_id, montant, mode, reference,
-                               numero_recu, mois_couvert, encaisse_par, paiement_en_ligne_id)
-         VALUES ($1,$2,$3,$4,'wave',$5,$6,$7,$8,$9)`,
+                               numero_recu, mois_couvert, encaisse_par, paiement_en_ligne_id, categorie)
+         VALUES ($1,$2,$3,$4,'wave',$5,$6,$7,$8,$9,
+                 CASE WHEN (SELECT cas_social FROM eleve WHERE id = $1) THEN 'autres_recettes' ELSE 'scolarite' END)`,
         [pel.eleve_id, pel.frais_id, pel.annee_id, l.montant, transactionFinale,
          numero, l.mois, verifiePar, pel.id]
       );
@@ -260,7 +264,7 @@ router.get('/mensualites', autoriser('parent'), async (req, res, next) => {
   try {
     const eleveId = eleveSuivi(req.user);
     if (!eleveId) return res.status(403).json({ erreur: 'Aucun enfant rattache a ce compte' });
-    const { annee, mois, frais } = await mensualitesDe(eleveId);
+    const { annee, mois, frais, cas_social: casSocial } = await mensualitesDe(eleveId);
 
     // Sommes declarees mais pas encore verifiees par la caisse : le tuteur
     // doit les voir, pour ne pas payer deux fois le meme mois.
@@ -282,6 +286,7 @@ router.get('/mensualites', autoriser('parent'), async (req, res, next) => {
         return { ...f, en_verification: enVerification, mois: deduireEnCours(f.mois, enVerification) };
       }),
       wave: { disponible: mode != null, mode },
+      cas_social: Boolean(casSocial),
     });
   } catch (err) { next(err); }
 });

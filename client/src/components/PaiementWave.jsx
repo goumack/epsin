@@ -49,6 +49,13 @@ export function MensualitesWave({ onPaye, onErreur }) {
   useEffect(() => { charger(); }, []);
 
   if (!donnees) return <Chargement />;
+  if (donnees.cas_social) {
+    return (
+      <div className="carte p-4 text-sm text-slate-600 dark:text-slate-300">
+        La scolarité de votre enfant est prise en charge par l'établissement : aucun paiement n'est demandé.
+      </div>
+    );
+  }
   if (!donnees.frais.length) return null;
 
   // Relit la situation avant d ouvrir le formulaire : un paiement a pu etre

@@ -10,7 +10,7 @@ import { Chargement, Puce } from './ui';
 function resume(r) {
   const parFrais = new Map();
   for (const d of r.details || []) {
-    const nom = d.frais || 'Versement';
+    const nom = d.frais || 'Contribution volontaire';
     if (!parFrais.has(nom)) parFrais.set(nom, []);
     if (d.mois) parFrais.get(nom).push(d.mois);
   }
@@ -82,6 +82,7 @@ export default function HistoriqueRecus({ eleveId = null, personnel = false, tit
                 </span>
               </span>
               {r.annule && <Puce ton="danger">Annulé</Puce>}
+              {personnel && r.autres_recettes && <Puce ton="alerte">Autres recettes</Puce>}
               <span className="tabular-nums font-semibold">{fcfa(r.montant)}</span>
               <span className="flex gap-1.5">
                 <a href={`/recu/${r.id}`} target="_blank" rel="noopener noreferrer"

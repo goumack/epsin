@@ -102,6 +102,12 @@ function Synthese() {
         />
       </div>
 
+      {/* Les versements des eleves cas social ne sont pas des recettes de scolarite */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Statistique titre="Recettes de scolarité" valeur={fcfa(d.recettes_scolarite)} icone={TrendingUp} ton="info" />
+        <Statistique titre="Autres recettes (cas sociaux)" valeur={fcfa(d.autres_recettes)} icone={TrendingUp} ton="alerte" />
+      </div>
+
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="carte p-5 lg:col-span-2">
           <h3 className="mb-4 font-semibold">Encaissements par mois</h3>
@@ -284,13 +290,23 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
   const [mode, setMode] = useState('especes');
   const [reference, setReference] = useState('');
   const [envoi, setEnvoi] = useState(false);
+  // Cas social : versement volontaire sans frais, classe en « Autres recettes »
+  const [contribution, setContribution] = useState('');
 
   /** Situation et echeancier de l eleve, puis frais coches par defaut. */
-  const chargerEleve = async (e, preselectionner) => {
-    const [sit, ech] = await Promise.all([
+  const chargerEleve = async (e, preselection) => {
+    const [brut, ech] = await Promise.all([
       get(`/finances/situation/${e.id}`).catch(() => null),
       get(`/finances/echeancier/${e.id}`).catch(() => []),
     ]);
+    // Un cas social ne doit rien, mais peut regler un frais de lui-meme :
+    // on propose ce qui reste sur chaque frais, rien n est coche d office
+    const casSocial = Boolean(brut?.eleve?.cas_social);
+    const sit = casSocial
+      ? { ...brut, lignes: brut.lignes.map((l) => (l.recurrent ? l : { ...l, reste: l.reste_frais })) }
+      : brut;
+    const preselectionner = preselection && !casSocial;
+    setContribution('');
     setSituation(sit);
     setEcheancier(ech);
     const initial = {};
@@ -356,12 +372,14 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
   // Un frais deja entierement regle n est jamais encaisse
   const cochees = lignes.filter((x) => x.c.coche
     && (x.mensuel ? x.aRegler.length > 0 : Number(x.l.reste) > 0));
-  const total = cochees.reduce((s, x) => s + x.montant, 0);
+  const casSocial = Boolean(situation?.eleve?.cas_social);
+  const montantContribution = casSocial ? Math.round(Number(contribution)) || 0 : 0;
+  const total = cochees.reduce((s, x) => s + x.montant, 0) + montantContribution;
 
   const soumettre = async (ev) => {
     ev.preventDefault();
     if (!eleve) return onErreur('Sélectionnez un élève');
-    if (!cochees.length) return onErreur('Cochez au moins un frais à encaisser');
+    if (!cochees.length && !montantContribution) return onErreur('Cochez au moins un frais à encaisser');
     if (cochees.some((x) => !(x.montant > 0))) return onErreur('Chaque frais coché doit avoir un montant');
     setEnvoi(true);
     try {
@@ -369,10 +387,13 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
         eleve_id: eleve.id,
         mode,
         reference: reference || null,
-        elements: cochees.map((x) => (x.mensuel && !x.c.libre
-          // Mois complets : le serveur calcule lui-meme le montant
-          ? { frais_id: x.l.id, nb_mois: x.nb, dernier_mois: Boolean(x.c.dernier) }
-          : { frais_id: x.l.id, montant: x.montant })),
+        elements: [
+          ...cochees.map((x) => (x.mensuel && !x.c.libre
+            // Mois complets : le serveur calcule lui-meme le montant
+            ? { frais_id: x.l.id, nb_mois: x.nb, dernier_mois: Boolean(x.c.dernier) }
+            : { frais_id: x.l.id, montant: x.montant })),
+          ...(montantContribution > 0 ? [{ montant: montantContribution }] : []),
+        ],
       });
       onCree(cree);
     } catch (err) { onErreur(err.message); } finally { setEnvoi(false); }
@@ -445,6 +466,19 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
             </p>
           ) : (
             <div>
+              {casSocial && (
+                <div className="mb-3 space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                  <p>
+                    <strong>Cas social</strong> : cet élève ne doit aucun frais. Ce qu'il verse est enregistré en
+                    {' '}<strong>« Autres recettes »</strong>.
+                  </p>
+                  <label className="flex flex-wrap items-center gap-2">
+                    <span>Contribution volontaire (sans frais précis) :</span>
+                    <input type="number" min="1" className="champ w-32 py-1 text-right tabular-nums"
+                           value={contribution} onChange={(e) => setContribution(e.target.value)} placeholder="0" />
+                  </label>
+                </div>
+              )}
               <p className="etiquette">Frais à encaisser</p>
               <ul className="divide-y divide-slate-100 dark:divide-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
                 {lignes.map(({ l, c, mensuel, aRegler, nb, montant }) => {
@@ -561,7 +595,7 @@ export function FormulairePaiement({ ouvert, onFermer, onCree, onErreur, eleveIn
             Total : <strong className="text-base tabular-nums text-slate-800 dark:text-slate-200">{fcfa(total)}</strong>
           </span>
           <button type="button" onClick={onFermer} className="bouton-secondaire">Annuler</button>
-          <button type="submit" className="bouton-primaire" disabled={envoi || !cochees.length}>
+          <button type="submit" className="bouton-primaire" disabled={envoi || (!cochees.length && !montantContribution)}>
             {envoi ? 'Enregistrement…' : 'Encaisser'}
           </button>
         </div>

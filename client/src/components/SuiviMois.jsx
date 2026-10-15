@@ -11,7 +11,10 @@ const STATUTS = {
   partiel: { ton: 'alerte', texte: 'Partiel' },
   non_paye: { ton: 'danger', texte: 'Non payé' },
   sans_mensualite: { ton: 'neutre', texte: 'Pas de mensualité' },
+  cas_social: { ton: 'neutre', texte: 'Cas social' },
 };
+/** Eleves sans mensualite due ce mois : ni comptes ni relances. */
+const HORS_SUIVI = ['sans_mensualite', 'cas_social'];
 const A_RELANCER = ['non_paye', 'partiel'];
 
 /** "2026-10" -> "octobre 2026" */
@@ -86,7 +89,7 @@ export default function SuiviMois() {
   const classes = useMemo(() => (donnees?.classes || [])
     .filter((c) => !classeId || String(c.id) === classeId), [donnees, classeId]);
 
-  const tous = classes.flatMap((c) => c.eleves.filter((e) => e.statut !== 'sans_mensualite'));
+  const tous = classes.flatMap((c) => c.eleves.filter((e) => !HORS_SUIVI.includes(e.statut)));
   const payes = tous.filter((e) => e.statut === 'paye' || e.statut === 'en_verification');
   const aRelancer = tous.filter((e) => A_RELANCER.includes(e.statut));
   const attendu = tous.reduce((s, e) => s + e.du, 0);
@@ -145,9 +148,11 @@ export default function SuiviMois() {
           </p>
 
           {classes.length === 0 ? <Vide titre="Aucun élève inscrit" /> : classes.map((c) => {
-            const eleves = c.eleves.filter((e) => e.statut !== 'sans_mensualite');
+            const eleves = c.eleves.filter((e) => !HORS_SUIVI.includes(e.statut));
             const ok = eleves.filter((e) => !A_RELANCER.includes(e.statut)).length;
-            const lignes = eleves.filter(visible);
+            // « Tous » montre aussi les cas sociaux, sans les compter
+            const lignes = (filtre === 'tous' ? c.eleves.filter((e) => e.statut !== 'sans_mensualite') : eleves)
+              .filter(visible);
             return (
               <section key={c.id} className="carte overflow-hidden break-inside-avoid">
                 <header className="flex flex-wrap items-center gap-3 border-b border-slate-200 dark:border-slate-800 px-4 py-2.5">
@@ -184,7 +189,9 @@ export default function SuiviMois() {
                           <span className="w-28 text-right tabular-nums">
                             {A_RELANCER.includes(e.statut)
                               ? <strong className="text-red-600">{fcfa(e.reste)}</strong>
-                              : <span className="text-emerald-600">{fcfa(e.verse + e.en_verification)}</span>}
+                              : e.statut === 'cas_social'
+                                ? <span className="text-slate-400">Dispensé</span>
+                                : <span className="text-emerald-600">{fcfa(e.verse + e.en_verification)}</span>}
                           </span>
                           {A_RELANCER.includes(e.statut) && (
                             <span className="w-28 text-right print:hidden">

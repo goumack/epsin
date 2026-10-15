@@ -403,6 +403,11 @@ router.post('/paiements', autoriser(...CAISSE), async (req, res, next) => {
       });
     }
 
+    // Ce que verse un eleve cas social n est pas une recette de scolarite
+    const { rows: [el] } = await query(`SELECT cas_social FROM eleve WHERE id = $1`, [Number(eleve_id)]);
+    if (!el) return res.status(404).json({ erreur: 'Eleve introuvable' });
+    const categorie = el.cas_social ? 'autres_recettes' : 'scolarite';
+
     const lignes = await transaction(async (client) => {
       // Un encaissement a la fois par eleve : deux caisses ne peuvent pas
       // regler le meme mois en meme temps
@@ -422,11 +427,11 @@ router.post('/paiements', autoriser(...CAISSE), async (req, res, next) => {
           const numero = await prochainNumeroRecu(client);
           const { rows } = await client.query(
             `INSERT INTO paiement (eleve_id, frais_id, annee_id, montant, mode, reference,
-                                   numero_recu, mois_couvert, date_paiement, encaisse_par)
-             VALUES ($1,$2,$3,$4,COALESCE($5,'especes'),$6,$7,$8,COALESCE($9,CURRENT_DATE),$10)
+                                   numero_recu, mois_couvert, date_paiement, encaisse_par, categorie)
+             VALUES ($1,$2,$3,$4,COALESCE($5,'especes'),$6,$7,$8,COALESCE($9,CURRENT_DATE),$10,$11)
              RETURNING *`,
             [eleve_id, p.fraisId, ar[0].id, v.montant, mode, reference || null,
-             numero, v.mois, date_paiement || null, req.user.id]
+             numero, v.mois, date_paiement || null, req.user.id, categorie]
           );
           creees.push({ ...rows[0], frais: p.libelle });
         }
@@ -497,6 +502,7 @@ router.get('/situation/:eleveId', async (req, res, next) => {
 async function calculerSituation(eleveId) {
   const { rows: info } = await query(
     `SELECT e.id, e.matricule, e.prenom, e.nom, c.libelle AS classe, c.niveau_id,
+            e.cas_social, e.cas_social_motif,
             (SELECT libelle FROM annee_scolaire WHERE active LIMIT 1) AS annee
      FROM eleve e
      LEFT JOIN inscription i ON i.eleve_id = e.id
@@ -535,6 +541,12 @@ async function calculerSituation(eleveId) {
   );
 
   const lignes = frais.map((f) => {
+    // Cas social : rien n est du. reste_frais garde ce qui reste sur le
+    // frais lui-meme, pour une contribution volontaire au guichet.
+    if (info[0].cas_social) {
+      const resteFrais = f.recurrent ? null : Math.max(Number(f.montant) - Number(f.paye), 0);
+      return { ...f, du: 0, reste: 0, reste_frais: resteFrais };
+    }
     if (!f.recurrent) {
       const du = Number(f.montant);
       return { ...f, du, reste: Math.max(du - Number(f.paye), 0) };
@@ -551,8 +563,10 @@ async function calculerSituation(eleveId) {
     };
   });
 
+  // Versements sans frais precis (contribution d un cas social) : payes aussi
+  const horsFrais = versements.filter((v) => !v.frais_id).reduce((s, v) => s + Number(v.montant), 0);
   const totalDu = lignes.reduce((s, l) => s + l.du, 0);
-  const totalPaye = lignes.reduce((s, l) => s + Number(l.paye), 0);
+  const totalPaye = lignes.reduce((s, l) => s + Number(l.paye), 0) + horsFrais;
   const totalReste = lignes.reduce((s, l) => s + l.reste, 0);
 
   return {
@@ -587,7 +601,7 @@ router.get('/suivi-mois', autoriser(...CAISSE, 'censeur'), async (req, res, next
       : (demande < moisAnnee[0] ? moisAnnee[0] : moisAnnee.at(-1));
 
     const { rows: eleves } = await query(
-      `SELECT e.id, e.matricule, e.prenom, e.nom, e.sexe,
+      `SELECT e.id, e.matricule, e.prenom, e.nom, e.sexe, e.cas_social,
               c.id AS classe_id, c.libelle AS classe, c.niveau_id, n.ordre,
               t.prenom || ' ' || t.nom AS tuteur, t.telephone
        FROM eleve e
@@ -649,7 +663,8 @@ router.get('/suivi-mois', autoriser(...CAISSE, 'censeur'), async (req, res, next
         }
       }
       let statut;
-      if (du === 0) statut = 'sans_mensualite';
+      if (e.cas_social) statut = 'cas_social';
+      else if (du === 0) statut = 'sans_mensualite';
       else if (reste === 0) statut = verification > 0 && verse < du ? 'en_verification' : 'paye';
       else if (verse > 0 || verification > 0) statut = 'partiel';
       else statut = 'non_paye';
@@ -692,7 +707,7 @@ router.get('/impayes', autoriser(...CAISSE, 'censeur'), async (req, res, next) =
        FROM eleve e
        JOIN inscription i ON i.eleve_id = e.id AND i.annee_id = $1
        JOIN classe c ON c.id = i.classe_id
-       WHERE e.statut = 'actif'`,
+       WHERE e.statut = 'actif' AND NOT e.cas_social`,
       [an[0].id]
     );
     const { rows: frais } = await query(
@@ -790,9 +805,18 @@ router.get('/synthese', autoriser(...CAISSE), async (req, res, next) => {
        WHERE NOT annule AND annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)
        GROUP BY mode ORDER BY montant DESC`
     );
+    const { rows: parCategorie } = await query(
+      `SELECT categorie, SUM(montant) AS montant, COUNT(*)::int AS nombre
+       FROM paiement
+       WHERE NOT annule AND annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)
+       GROUP BY categorie`
+    );
+    const categorie = (c) => Number(parCategorie.find((x) => x.categorie === c)?.montant || 0);
     res.json({
       ...totaux[0],
       solde: Number(totaux[0].recettes) - Number(totaux[0].depenses),
+      recettes_scolarite: categorie('scolarite'),
+      autres_recettes: categorie('autres_recettes'),
       par_mois: parMois,
       par_mode: parMode,
     });
@@ -824,6 +848,7 @@ router.get('/recus', async (req, res, next) => {
       `SELECT MIN(p.id) AS id, MIN(p.numero_recu) AS numero_recu, COUNT(*)::int AS lignes,
               SUM(p.montant)::numeric AS montant, MIN(p.date_paiement) AS date_paiement,
               MIN(p.mode) AS mode, bool_or(p.annule) AS annule,
+              bool_or(p.categorie = 'autres_recettes') AS autres_recettes,
               string_agg(DISTINCT f.libelle, ', ') AS frais,
               string_agg(p.mois_couvert, ',' ORDER BY p.id) AS mois,
               -- Detail du recu : chaque frais avec son mois et son montant
@@ -861,7 +886,11 @@ async function situationPourRecu(eleveId) {
       mois_restants: e.etat.filter((m) => m.statut !== 'paye').length,
     });
   }
-  return { total_du: sit.total_du, total_paye: sit.total_paye, reste: sit.reste, mensualites };
+  return {
+    total_du: sit.total_du, total_paye: sit.total_paye, reste: sit.reste,
+    mensualites: sit.eleve.cas_social ? [] : mensualites,
+    cas_social: Boolean(sit.eleve.cas_social),
+  };
 }
 
 /** Recu complet, pret a imprimer. `:id` est l id d une ecriture du recu. */

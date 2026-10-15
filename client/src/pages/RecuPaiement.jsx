@@ -25,12 +25,14 @@ export function messageRecu(recu, numero) {
     `${ecole} confirme le paiement reçu le ${dateFr(recu.date_paiement)} pour `
       + `*${eleve?.prenom} ${eleve?.nom}*${eleve?.classe ? ` (${eleve.classe})` : ''} :`,
     ...recu.lignes.filter((l) => !l.annule).map((l) =>
-      `• ${l.frais || 'Versement'}${l.mois ? ` — ${moisMaj(l.mois)}` : ''} : ${fcfa(l.montant)}`),
+      `• ${l.frais || 'Contribution volontaire'}${l.mois ? ` — ${moisMaj(l.mois)}` : ''} : ${fcfa(l.montant)}`),
     `*Total payé : ${fcfa(recu.total)}*`,
     `Mode : ${MODES[recu.mode] || recu.mode}${recu.reference ? ` (réf. ${recu.reference})` : ''}`,
     `Reçu N° ${numero}`,
   ];
-  if (recu.situation) {
+  if (recu.situation?.cas_social) {
+    lignes.push('', "Scolarité prise en charge par l'établissement : aucun frais n'est dû. Merci pour cette contribution.");
+  } else if (recu.situation) {
     lignes.push('', "*Situation de l'élève*");
     for (const m of recu.situation.mensualites) {
       lignes.push(`${m.libelle} : ${m.regle_jusqu_a ? `réglée jusqu'à ${moisMaj(m.regle_jusqu_a)}` : 'aucun mois réglé'}`);
@@ -182,7 +184,7 @@ export default function RecuPaiement() {
             {recu.lignes.map((l) => (
               <tr key={l.numero_recu} className={`border-b border-slate-300 ${l.annule ? 'line-through text-slate-500' : ''}`}>
                 <td className="py-1.5">
-                  {l.frais || 'Versement'}
+                  {l.frais || 'Contribution volontaire'}
                   {l.mois && <span className="capitalize"> — {libelleMois(l.mois)}</span>}
                 </td>
                 <td className="py-1.5 font-mono text-xs">{l.numero_recu}</td>
@@ -222,6 +224,12 @@ export default function RecuPaiement() {
         {recu.situation && !recu.annule && (
           <section className="mt-4 rounded border border-black p-3 text-sm">
             <p className="mb-1 font-semibold">Situation de l'élève au {new Date().toLocaleDateString('fr-FR')}</p>
+            {recu.situation.cas_social && (
+              <p>
+                Scolarité prise en charge par l'établissement (cas social) : aucun frais n'est dû.
+                Ce versement est enregistré en « Autres recettes ».
+              </p>
+            )}
             {recu.situation.mensualites.map((m) => (
               <p key={m.libelle}>
                 {m.libelle} : {m.regle_jusqu_a
@@ -232,12 +240,12 @@ export default function RecuPaiement() {
                   : <> — année entièrement réglée</>}
               </p>
             ))}
-            <p className="mt-1">
+            {!recu.situation.cas_social && <p className="mt-1">
               Dû à ce jour : {fcfa(recu.situation.total_du)} — Payé : {fcfa(recu.situation.total_paye)} —{' '}
               {recu.situation.reste > 0
                 ? <strong>Reste à payer : {fcfa(recu.situation.reste)}</strong>
                 : <strong>À jour de ses paiements</strong>}
-            </p>
+            </p>}
           </section>
         )}
 
