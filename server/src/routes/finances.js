@@ -6,7 +6,7 @@ import { prochainNumeroRecu } from '../db/recus.js';
 import { montantEnLettres } from '../metier/montant-lettres.js';
 import {
   moisDeLAnnee, moisDuFrais, nbMoisExigibles, etatDesMois, resteExigible,
-  montantPourMois, ventilerVersement, resteAnnee,
+  montantPourMois, ventilerVersement, resteAnnee, deduireEnCours, moisCourant,
 } from '../metier/mensualites.js';
 
 const router = Router();
@@ -564,6 +564,114 @@ async function calculerSituation(eleveId) {
     a_jour: totalReste === 0,
   };
 }
+
+/**
+ * Suivi d un mois, classe par classe : qui a paye la mensualite de ce mois,
+ * qui ne l a pas payee — pour relancer les parents. Par defaut le mois en
+ * cours (borne a l annee scolaire). Pour chaque eleve : statut du mois,
+ * reste du mois, et retard cumule jusqu a ce mois inclus (les mois
+ * precedents non regles), avec le contact du tuteur.
+ *
+ * Une declaration Wave en attente de verification couvre ses mois : statut
+ * « en_verification », on ne relance pas un parent qui a deja paye.
+ */
+router.get('/suivi-mois', autoriser(...CAISSE, 'censeur'), async (req, res, next) => {
+  try {
+    const { rows: an } = await query(
+      `SELECT id, libelle, date_debut, date_fin FROM annee_scolaire WHERE active LIMIT 1`
+    );
+    if (!an[0]) return res.json({ annee: null, mois: null, mois_disponibles: [], classes: [] });
+    const moisAnnee = moisDeLAnnee(an[0].date_debut, an[0].date_fin);
+    const demande = /^\d{4}-\d{2}$/.test(String(req.query.mois || '')) ? req.query.mois : moisCourant();
+    const mois = moisAnnee.includes(demande) ? demande
+      : (demande < moisAnnee[0] ? moisAnnee[0] : moisAnnee.at(-1));
+
+    const { rows: eleves } = await query(
+      `SELECT e.id, e.matricule, e.prenom, e.nom, e.sexe,
+              c.id AS classe_id, c.libelle AS classe, c.niveau_id, n.ordre,
+              t.prenom || ' ' || t.nom AS tuteur, t.telephone
+       FROM eleve e
+       JOIN inscription i ON i.eleve_id = e.id AND i.annee_id = $1
+       JOIN classe c ON c.id = i.classe_id
+       JOIN niveau n ON n.id = c.niveau_id
+       LEFT JOIN LATERAL (
+         SELECT t.prenom, t.nom, t.telephone FROM tuteur t
+         JOIN eleve_tuteur et ON et.tuteur_id = t.id
+         WHERE et.eleve_id = e.id ORDER BY et.principal DESC LIMIT 1
+       ) t ON true
+       WHERE e.statut = 'actif'
+       ORDER BY n.ordre, c.libelle, e.nom, e.prenom`,
+      [an[0].id]
+    );
+    // Mensualites obligatoires (un frais facultatif comme la cantine n est pas du par tous)
+    const { rows: frais } = await query(
+      `SELECT id, niveau_id, libelle, montant, mois_fin FROM frais
+       WHERE annee_id = $1 AND recurrent AND obligatoire AND montant > 0`,
+      [an[0].id]
+    );
+    const { rows: versements } = await query(
+      `SELECT eleve_id, frais_id, montant, mois_couvert AS mois FROM paiement
+       WHERE annee_id = $1 AND NOT annule AND frais_id IS NOT NULL ORDER BY id`,
+      [an[0].id]
+    );
+    const { rows: enCours } = await query(
+      `SELECT eleve_id, frais_id, SUM(montant)::numeric AS montant FROM paiement_en_ligne
+       WHERE annee_id = $1 AND statut = 'a_verifier' GROUP BY eleve_id, frais_id`,
+      [an[0].id]
+    );
+    const cle = (e, f) => `${e}:${f}`;
+    const parCle = new Map();
+    for (const v of versements) {
+      if (!parCle.has(cle(v.eleve_id, v.frais_id))) parCle.set(cle(v.eleve_id, v.frais_id), []);
+      parCle.get(cle(v.eleve_id, v.frais_id)).push(v);
+    }
+    const attente = new Map(enCours.map((x) => [cle(x.eleve_id, x.frais_id), Number(x.montant)]));
+
+    const classes = new Map();
+    for (const e of eleves) {
+      let du = 0, verse = 0, reste = 0, verification = 0, retard = 0;
+      const moisRetard = new Set();
+      for (const f of frais.filter((x) => !x.niveau_id || x.niveau_id === e.niveau_id)) {
+        const liste = moisDuFrais(moisAnnee, f.mois_fin);
+        if (!liste.includes(mois)) continue;
+        const etat = deduireEnCours(
+          etatDesMois(liste, f.montant, parCle.get(cle(e.id, f.id)) || []),
+          attente.get(cle(e.id, f.id)) || 0
+        );
+        const m = etat.find((x) => x.mois === mois);
+        du += Number(f.montant);
+        verse += m.verse;
+        reste += m.reste_du;
+        verification += m.en_verification || 0;
+        for (const x of etat.filter((y) => y.mois <= mois && y.reste_du > 0)) {
+          retard += x.reste_du;
+          moisRetard.add(x.mois);
+        }
+      }
+      let statut;
+      if (du === 0) statut = 'sans_mensualite';
+      else if (reste === 0) statut = verification > 0 && verse < du ? 'en_verification' : 'paye';
+      else if (verse > 0 || verification > 0) statut = 'partiel';
+      else statut = 'non_paye';
+
+      if (!classes.has(e.classe_id)) {
+        classes.set(e.classe_id, { id: e.classe_id, libelle: e.classe, eleves: [] });
+      }
+      classes.get(e.classe_id).eleves.push({
+        id: e.id, matricule: e.matricule, prenom: e.prenom, nom: e.nom, sexe: e.sexe,
+        tuteur: e.tuteur, telephone: e.telephone,
+        statut, du, verse, reste, en_verification: verification,
+        retard, mois_retard: [...moisRetard].sort(),
+      });
+    }
+    res.json({
+      annee: an[0].libelle,
+      mois,
+      mois_disponibles: moisAnnee,
+      classes: [...classes.values()],
+    });
+  } catch (err) { next(err); }
+});
 
 // Liste des impayes
 router.get('/impayes', autoriser(...CAISSE, 'censeur'), async (req, res, next) => {

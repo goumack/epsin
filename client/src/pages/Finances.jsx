@@ -10,6 +10,7 @@ import {
   Chargement, Erreur, Vide, Modale, Puce, Onglets, Statistique, Recherche, useToast,
 } from '../components/ui';
 import { STATUTS_PAIEMENT, libelleMois } from '../components/PaiementWave';
+import SuiviMois from '../components/SuiviMois';
 
 const MODES = {
   especes: 'Espèces', wave: 'Wave', om: 'Orange Money',
@@ -24,6 +25,7 @@ export default function Finances() {
       <Onglets
         onglets={[
           { cle: 'synthese', libelle: 'Synthèse' },
+          { cle: 'suivi', libelle: 'Suivi du mois' },
           { cle: 'paiements', libelle: 'Paiements' },
           { cle: 'wave', libelle: 'Wave à vérifier' },
           { cle: 'impayes', libelle: 'Impayés' },
@@ -34,6 +36,7 @@ export default function Finances() {
         onChange={setOnglet}
       />
       {onglet === 'synthese' && <Synthese />}
+      {onglet === 'suivi' && <SuiviMois />}
       {onglet === 'paiements' && <Paiements />}
       {onglet === 'wave' && <VerificationWave />}
       {onglet === 'impayes' && <Impayes />}
