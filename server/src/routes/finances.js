@@ -715,13 +715,18 @@ router.get('/recus', async (req, res, next) => {
     const { rows } = await query(
       `SELECT MIN(p.id) AS id, MIN(p.numero_recu) AS numero_recu, COUNT(*)::int AS lignes,
               SUM(p.montant)::numeric AS montant, MIN(p.date_paiement) AS date_paiement,
-              p.mode, f.libelle AS frais, bool_or(p.annule) AS annule,
-              string_agg(p.mois_couvert, ',' ORDER BY p.id) AS mois
+              MIN(p.mode) AS mode, bool_or(p.annule) AS annule,
+              string_agg(DISTINCT f.libelle, ', ') AS frais,
+              string_agg(p.mois_couvert, ',' ORDER BY p.id) AS mois,
+              -- Detail du recu : chaque frais avec son mois et son montant
+              json_agg(json_build_object('frais', f.libelle, 'mois', p.mois_couvert, 'montant', p.montant)
+                       ORDER BY p.id) AS details
        FROM paiement p
        LEFT JOIN frais f ON f.id = p.frais_id
        WHERE p.eleve_id = $1 AND ($2::boolean OR NOT p.annule)
-       -- Un recu par paiement Wave, par lot du guichet, sinon par ecriture
-       GROUP BY COALESCE('w' || p.paiement_en_ligne_id, 'l' || p.lot, 'p' || p.id), p.mode, f.libelle
+       -- Un recu par paiement Wave, par lot du guichet (inscription : tous
+       -- les frais ensemble), sinon par ecriture
+       GROUP BY COALESCE('w' || p.paiement_en_ligne_id, 'l' || p.lot, 'p' || p.id)
        ORDER BY MIN(p.date_paiement) DESC, MIN(p.id) DESC`,
       // Le tuteur ne voit pas les ecritures annulees : elles ne valent rien
       [eleveId, !estTuteur(req.user)]

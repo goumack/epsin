@@ -110,6 +110,28 @@ describe('Validation Wave apres un reglement au guichet', () => {
   });
 });
 
+describe('Historique des recus', () => {
+  it('chaque encaissement reste dans l historique : un recu par lot, avec son detail', async () => {
+    const r = await api('GET', `/api/finances/recus?eleve_id=${eleve.id}`, COMPTES.comptable);
+    expect(r.status).toBe(200);
+    const { rows: [attendu] } = await query(
+      `SELECT COUNT(DISTINCT COALESCE('w' || paiement_en_ligne_id, 'l' || lot, 'p' || id))::int AS n,
+              COUNT(*)::int AS lignes
+       FROM paiement WHERE eleve_id = $1`,
+      [eleve.id]
+    );
+    expect(r.body).toHaveLength(attendu.n);
+    expect(r.body.reduce((s, x) => s + x.details.length, 0)).toBe(attendu.lignes);
+    // Les mois de la mensualite figurent dans le detail
+    expect(r.body.some((x) => x.details.some((d) => d.mois))).toBe(true);
+    // Chaque recu de l historique se rouvre
+    for (const x of r.body) {
+      const recu = await api('GET', `/api/finances/recus/${x.id}`, COMPTES.comptable);
+      expect(recu.status).toBe(200);
+    }
+  });
+});
+
 describe('Regles de calcul', () => {
   it('une declaration en cours couvre les mois dans l ordre', () => {
     const etat = etatDesMois(['2026-10', '2026-11', '2026-12'], 10000, [], new Date('2026-11-15'));

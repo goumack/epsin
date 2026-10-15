@@ -16,7 +16,7 @@ const MODES = {
 const moisMaj = (m) => { const t = libelleMois(m); return t.charAt(0).toUpperCase() + t.slice(1); };
 
 /** Le recu en texte, pour WhatsApp : detail, total, situation de l eleve. */
-function messageRecu(recu, numero) {
+export function messageRecu(recu, numero) {
   const { etablissement: etab, eleve } = recu;
   const ecole = etab?.nom || 'EPSIN';
   const lignes = [

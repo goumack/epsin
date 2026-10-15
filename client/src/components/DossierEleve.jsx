@@ -10,6 +10,7 @@ import ParcoursEleve from './ParcoursEleve';
 import FicheAcces from './FicheAcces';
 import { ModifierEleve, SupprimerEleve } from './CorrectionsEleve';
 import { FormulairePaiement, BandeauRecu } from '../pages/Finances';
+import HistoriqueRecus from './HistoriqueRecus';
 
 /**
  * Dossier complet d un eleve : identite, bulletin, detail des notes,
@@ -569,6 +570,8 @@ function Finances({ eleveId }) {
   const [encaisser, setEncaisser] = useState(false);
   const [recu, setRecu] = useState(null);
   const [messageCaisse, setMessageCaisse] = useState('');
+  // Recharge l historique apres chaque encaissement
+  const [version, setVersion] = useState(0);
 
   const charger = useCallback(() => {
     get(`/finances/situation/${eleveId}`)
@@ -638,6 +641,7 @@ function Finances({ eleveId }) {
           setEncaisser(false);
           setRecu({ id: p.id, numero: p.numero_recu, texte: `${fcfa(p.montant)} encaissés` });
           charger();
+          setVersion((v) => v + 1);
         }}
         onErreur={setMessageCaisse}
       />
@@ -674,6 +678,9 @@ function Finances({ eleveId }) {
           </tbody>
         </table>
       </div>
+
+      {/* Tous les recus, a reimprimer ou renvoyer a la demande de la famille */}
+      {caisse && <HistoriqueRecus key={version} eleveId={eleveId} personnel />}
     </div>
   );
 }

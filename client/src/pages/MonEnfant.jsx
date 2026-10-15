@@ -8,7 +8,8 @@ import {
   Chargement, Vide, Modale, Puce, Onglets, useToast,
 } from '../components/ui';
 import BulletinOfficiel from '../components/BulletinOfficiel';
-import { MensualitesWave, SuiviPaiement, ListeRecus } from '../components/PaiementWave';
+import { MensualitesWave, SuiviPaiement } from '../components/PaiementWave';
+import HistoriqueRecus from '../components/HistoriqueRecus';
 import { useSearchParams } from 'react-router-dom';
 
 /**
@@ -455,7 +456,7 @@ function Finances({ eleveId, paiementRetour, fermerRetour }) {
         onPaye={() => { chargerSituation(); succes('Paiement transmis'); }}
         onErreur={erreur}
       />
-      <ListeRecus key={`recus-${version}`} />
+      <HistoriqueRecus key={`recus-${version}`} titre="Mes reçus de paiement" />
       <div className="grid gap-3 sm:grid-cols-3">
         {[
           ['Total dû', situation.total_du],
