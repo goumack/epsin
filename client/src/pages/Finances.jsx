@@ -11,6 +11,7 @@ import {
 } from '../components/ui';
 import { STATUTS_PAIEMENT, libelleMois } from '../components/PaiementWave';
 import SuiviMois from '../components/SuiviMois';
+import MatricePaiements from '../components/MatricePaiements';
 
 const MODES = {
   especes: 'Espèces', wave: 'Wave', om: 'Orange Money',
@@ -26,6 +27,7 @@ export default function Finances() {
         onglets={[
           { cle: 'synthese', libelle: 'Synthèse' },
           { cle: 'suivi', libelle: 'Suivi du mois' },
+          { cle: 'matrice', libelle: 'Matrice des paiements' },
           { cle: 'paiements', libelle: 'Paiements' },
           { cle: 'wave', libelle: 'Wave à vérifier' },
           { cle: 'impayes', libelle: 'Impayés' },
@@ -37,6 +39,7 @@ export default function Finances() {
       />
       {onglet === 'synthese' && <Synthese />}
       {onglet === 'suivi' && <SuiviMois />}
+      {onglet === 'matrice' && <MatricePaiements />}
       {onglet === 'paiements' && <Paiements />}
       {onglet === 'wave' && <VerificationWave />}
       {onglet === 'impayes' && <Impayes />}

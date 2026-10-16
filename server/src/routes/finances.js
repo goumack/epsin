@@ -688,6 +688,127 @@ router.get('/suivi-mois', autoriser(...CAISSE, 'censeur'), async (req, res, next
   } catch (err) { next(err); }
 });
 
+/**
+ * Matrice des paiements : pour chaque eleve, les frais d inscription et
+ * chaque mois de l annee, avec leur etat — d un coup d oeil, l eleve qui
+ * n a pas paye janvier, a paye fevrier et doit mars et avril. Le rappel
+ * au parent porte sur TOUT ce qui reste du a ce jour.
+ *
+ * Mois : somme des mensualites obligatoires du niveau. Etat d un mois :
+ * paye, partiel, en_retard (commence et non regle), a_venir, en_verification
+ * (couvert par une declaration Wave non verifiee), ou null (pas du).
+ * Inscription : frais uniques obligatoires (droit d inscription, blouse...).
+ * `classe_id` restreint a une classe.
+ */
+router.get('/matrice', autoriser(...CAISSE, 'censeur'), async (req, res, next) => {
+  try {
+    const { rows: an } = await query(
+      `SELECT id, libelle, date_debut, date_fin FROM annee_scolaire WHERE active LIMIT 1`
+    );
+    if (!an[0]) return res.json({ annee: null, mois: [], classes: [] });
+    const moisAnnee = moisDeLAnnee(an[0].date_debut, an[0].date_fin);
+    const classeId = req.query.classe_id ? Number(req.query.classe_id) : null;
+
+    const { rows: eleves } = await query(
+      `SELECT e.id, e.matricule, e.prenom, e.nom, e.cas_social,
+              c.id AS classe_id, c.libelle AS classe, c.niveau_id,
+              t.prenom || ' ' || t.nom AS tuteur, t.telephone
+       FROM eleve e
+       JOIN inscription i ON i.eleve_id = e.id AND i.annee_id = $1
+       JOIN classe c ON c.id = i.classe_id
+       JOIN niveau n ON n.id = c.niveau_id
+       LEFT JOIN LATERAL (
+         SELECT t.prenom, t.nom, t.telephone FROM tuteur t
+         JOIN eleve_tuteur et ON et.tuteur_id = t.id
+         WHERE et.eleve_id = e.id ORDER BY et.principal DESC LIMIT 1
+       ) t ON true
+       WHERE e.statut = 'actif' AND ($2::int IS NULL OR c.id = $2)
+       ORDER BY n.ordre, c.libelle, e.nom, e.prenom`,
+      [an[0].id, classeId]
+    );
+    const { rows: frais } = await query(
+      `SELECT id, niveau_id, libelle, montant, recurrent, mois_fin FROM frais
+       WHERE annee_id = $1 AND obligatoire AND montant > 0`,
+      [an[0].id]
+    );
+    const { rows: versements } = await query(
+      `SELECT eleve_id, frais_id, montant, mois_couvert AS mois FROM paiement
+       WHERE annee_id = $1 AND NOT annule AND frais_id IS NOT NULL ORDER BY id`,
+      [an[0].id]
+    );
+    const { rows: enCours } = await query(
+      `SELECT eleve_id, frais_id, SUM(montant)::numeric AS montant FROM paiement_en_ligne
+       WHERE annee_id = $1 AND statut = 'a_verifier' GROUP BY eleve_id, frais_id`,
+      [an[0].id]
+    );
+    const cle = (e, fr) => `${e}:${fr}`;
+    const parCle = new Map();
+    for (const v of versements) {
+      if (!parCle.has(cle(v.eleve_id, v.frais_id))) parCle.set(cle(v.eleve_id, v.frais_id), []);
+      parCle.get(cle(v.eleve_id, v.frais_id)).push(v);
+    }
+    const attente = new Map(enCours.map((x) => [cle(x.eleve_id, x.frais_id), Number(x.montant)]));
+    const courant = moisCourant();
+
+    const classes = new Map();
+    for (const e of eleves) {
+      const sesFrais = frais.filter((x) => !x.niveau_id || x.niveau_id === e.niveau_id);
+      // Inscription : ce qui reste sur chaque frais unique
+      const inscription = { du: 0, paye: 0, reste: 0, detail: [] };
+      // Mois : cumul des mensualites
+      const mois = Object.fromEntries(moisAnnee.map((m) => [m, { du: 0, verse: 0, reste: 0, verification: 0 }]));
+      if (!e.cas_social) {
+        for (const fr of sesFrais) {
+          const vs = parCle.get(cle(e.id, fr.id)) || [];
+          if (!fr.recurrent) {
+            const paye = vs.reduce((t, v) => t + Number(v.montant), 0);
+            const reste = Math.max(Number(fr.montant) - paye, 0);
+            inscription.du += Number(fr.montant);
+            inscription.paye += Math.min(paye, Number(fr.montant));
+            inscription.reste += reste;
+            if (reste > 0) inscription.detail.push({ libelle: fr.libelle, reste });
+            continue;
+          }
+          const liste = moisDuFrais(moisAnnee, fr.mois_fin);
+          const etat = deduireEnCours(etatDesMois(liste, fr.montant, vs), attente.get(cle(e.id, fr.id)) || 0);
+          for (const x of etat) {
+            const m = mois[x.mois];
+            m.du += Number(fr.montant);
+            m.verse += x.verse;
+            m.reste += x.reste_du;
+            m.verification += x.en_verification || 0;
+          }
+        }
+      }
+      const cases = {};
+      let exigible = inscription.reste;
+      const moisEnRetard = [];
+      for (const [libelle, m] of Object.entries(mois)) {
+        let statut = null;
+        if (m.du > 0) {
+          if (m.reste === 0) statut = m.verification > 0 && m.verse < m.du ? 'en_verification' : 'paye';
+          else if (m.verse > 0 || m.verification > 0) statut = 'partiel';
+          else statut = libelle <= courant ? 'en_retard' : 'a_venir';
+          // Un mois commence et pas entierement regle est du a ce jour
+          if (libelle <= courant && m.reste > 0) {
+            exigible += m.reste;
+            moisEnRetard.push({ mois: libelle, reste: m.reste, partiel: m.verse > 0 || m.verification > 0 });
+          }
+        }
+        cases[libelle] = statut ? { statut, du: m.du, verse: m.verse, reste: m.reste } : null;
+      }
+      if (!classes.has(e.classe_id)) classes.set(e.classe_id, { id: e.classe_id, libelle: e.classe, eleves: [] });
+      classes.get(e.classe_id).eleves.push({
+        id: e.id, matricule: e.matricule, prenom: e.prenom, nom: e.nom,
+        tuteur: e.tuteur, telephone: e.telephone, cas_social: e.cas_social,
+        inscription: e.cas_social ? null : inscription,
+        mois: cases, mois_en_retard: moisEnRetard, exigible,
+      });
+    }
+    res.json({ annee: an[0].libelle, mois: moisAnnee, mois_courant: courant, classes: [...classes.values()] });
+  } catch (err) { next(err); }
+});
+
 // Liste des impayes
 router.get('/impayes', autoriser(...CAISSE, 'censeur'), async (req, res, next) => {
   try {
