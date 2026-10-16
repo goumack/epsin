@@ -136,12 +136,29 @@ export default function SuiviMois() {
       {!donnees ? <Chargement /> : (
         <>
           <div className="grid gap-4 sm:grid-cols-3">
-            <Statistique titre={`Ont payé ${moisLong(donnees.mois)}`} valeur={`${payes.length} / ${tous.length}`}
-                         icone={CheckCircle2} ton="succes" />
-            <Statistique titre="À relancer" valeur={aRelancer.length} icone={AlertTriangle} ton="alerte" />
+            {/* Toucher une carte affiche la liste correspondante */}
+            <button type="button" className="text-left" onClick={() => setFiltre('payes')}
+                    aria-label="Afficher les élèves qui ont payé">
+              <Statistique titre={`Ont payé ${moisLong(donnees.mois)}`} valeur={`${payes.length} / ${tous.length}`}
+                           icone={CheckCircle2} ton="succes" />
+            </button>
+            <button type="button" className="text-left" onClick={() => setFiltre('a_relancer')}
+                    aria-label="Afficher les élèves à relancer">
+              <Statistique titre="À relancer" valeur={aRelancer.length} icone={AlertTriangle} ton="alerte" />
+            </button>
             <Statistique titre="Encaissé sur le mois" valeur={`${fcfa(encaisse)} / ${fcfa(attendu)}`}
                          icone={CheckCircle2} ton="info" />
           </div>
+          {filtre === 'payes' && aRelancer.length > 0 && (
+            <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/40 dark:text-amber-300 print:hidden">
+              {aRelancer.length} élève{aRelancer.length > 1 ? 's' : ''} à relancer {aRelancer.length > 1 ? 'sont masqués' : 'est masqué'} par
+              {' '}le filtre « Payés » :{' '}
+              {aRelancer.slice(0, 3).map((e) => `${e.prenom} ${e.nom}`).join(', ')}{aRelancer.length > 3 ? '…' : ''}.
+              {' '}<button type="button" className="font-semibold underline" onClick={() => setFiltre('a_relancer')}>
+                Les afficher
+              </button>
+            </p>
+          )}
           <p className="text-xs text-slate-500 print:hidden">
             « Rappel » ouvre WhatsApp avec le message prêt pour le parent : vérifiez qu'il s'agit du compte de
             l'école ({NUMERO_ENVOI}), puis appuyez sur Envoyer. Les rappels envoyés sont cochés sur cet ordinateur.
@@ -179,7 +196,7 @@ export default function SuiviMois() {
                             <span className="font-medium">{e.prenom} {e.nom}</span>
                             <span className="ml-2 font-mono text-xs text-slate-400">{e.matricule}</span>
                             <span className="block text-xs text-slate-500">
-                              {e.tuteur || 'Tuteur non renseigné'}{e.telephone ? ` · ${e.telephone}` : ''}
+                              {e.tuteur || <span className="text-amber-600">Aucun tuteur : à ajouter dans son dossier</span>}{e.telephone ? ` · ${e.telephone}` : ''}
                               {e.mois_retard.length > 1 && (
                                 <span className="text-red-600"> · {e.mois_retard.length} mois en retard ({fcfa(e.retard)})</span>
                               )}
@@ -205,7 +222,7 @@ export default function SuiviMois() {
                                   {fait ? 'Relancé' : 'Rappel'}
                                 </a>
                               ) : (
-                                <span className="text-xs text-slate-400">Pas de numéro</span>
+                                <span className="text-xs text-amber-600" title="Ajoutez le numéro du tuteur dans le dossier de l'élève">Pas de numéro</span>
                               )}
                             </span>
                           )}
