@@ -531,12 +531,33 @@ router.delete('/:id', autoriser('admin'), async (req, res, next) => {
           notes: traces[0].notes,
         });
       }
+      // L eleve disparait du systeme comme s il n avait jamais existe : ses
+      // donnees (paiements, notes, compte parent... par cascade), mais aussi
+      // les traces qui le nomment ou le designent — journal d audit et
+      // notifications du personnel.
       await transaction(async (client) => {
+        const id = Number(req.params.id);
         const { rows: tuteurs } = await client.query(
-          `SELECT tuteur_id FROM eleve_tuteur WHERE eleve_id = $1`, [req.params.id]
+          `SELECT tuteur_id FROM eleve_tuteur WHERE eleve_id = $1`, [id]
         );
+        const ids = async (sql) => (await client.query(sql, [id])).rows.map((x) => x.id);
+        const paiements = await ids(`SELECT id FROM paiement WHERE eleve_id = $1`);
+        const enLigne = await ids(`SELECT id FROM paiement_en_ligne WHERE eleve_id = $1`);
+        const parents = await ids(`SELECT id FROM utilisateur WHERE eleve_suivi_id = $1`);
+        await client.query(
+          `DELETE FROM journal_audit
+           WHERE (entite = 'eleve' AND entite_id = $1)
+              OR (entite = 'paiement' AND entite_id = ANY($2))
+              OR (entite = 'paiement_en_ligne' AND entite_id = ANY($3))
+              OR (entite = 'utilisateur' AND entite_id = ANY($4))
+              OR utilisateur_id = ANY($4)
+              OR details->>'eleve_id' = $1::text`,
+          [id, paiements, enLigne, parents]
+        );
+        // Notifications du personnel qui le citent (« Paiement Wave a verifier : ... (EP-2026-0017) »)
+        await client.query(`DELETE FROM notification WHERE contenu LIKE '%' || $1 || '%'`, [el[0].matricule]);
         // Le compte parent part avec l eleve (ON DELETE CASCADE)
-        await client.query(`DELETE FROM eleve WHERE id = $1`, [req.params.id]);
+        await client.query(`DELETE FROM eleve WHERE id = $1`, [id]);
         for (const t of tuteurs) {
           await client.query(
             `DELETE FROM tuteur WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM eleve_tuteur WHERE tuteur_id = $1)`,
@@ -544,8 +565,9 @@ router.delete('/:id', autoriser('admin'), async (req, res, next) => {
           );
         }
       });
-      await tracer(req, 'suppression_definitive', 'eleve', el[0].id, {
-        matricule: el[0].matricule, nom: `${el[0].prenom} ${el[0].nom}`,
+      // Seule trace : une suppression a eu lieu, par qui et quand — sans
+      // nom ni matricule
+      await tracer(req, 'suppression_definitive', 'eleve', null, {
         ...(historique ? { paiements_supprimes: traces[0].paiements, notes_supprimees: traces[0].notes } : {}),
       });
       return res.json({ message: 'Eleve supprime definitivement' });

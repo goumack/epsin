@@ -212,8 +212,9 @@ export function SupprimerEleve({ eleve, ouvert, onFermer, onArchive, onSupprime 
           <div className="rounded-lg border border-red-200 dark:border-red-900 p-3">
             <p className="font-medium text-red-700 dark:text-red-400">Supprimer définitivement</p>
             <p className="mt-1 text-sm text-slate-500">
-              Uniquement pour une inscription faite par erreur (doublon, mauvais élève). Tout est effacé,
-              compte parent compris. Impossible si l'élève a déjà des paiements ou des notes.
+              Uniquement pour une inscription faite par erreur (doublon, mauvais élève). L'élève disparaît
+              du système comme s'il n'avait jamais existé : dossier, compte parent, historique et notifications.
+              S'il a déjà des paiements ou des notes, il faudra confirmer avec son matricule.
             </p>
             <button type="button" className="bouton-danger mt-2" disabled={Boolean(envoi)}
                     onClick={() => window.confirm(`Supprimer définitivement ${eleve.prenom} ${eleve.nom} ? Cette action est irréversible.`) && agir('definitif')}>
@@ -228,7 +229,8 @@ export function SupprimerEleve({ eleve, ouvert, onFermer, onArchive, onSupprime 
               </p>
               <p className="text-sm text-slate-600 dark:text-slate-300">
                 S'il s'agit d'un essai ou d'une erreur, vous pouvez tout effacer : l'élève, ses paiements
-                et leurs reçus, ses notes, son compte parent. Les totaux de la caisse seront recalculés sans eux.
+                et leurs reçus, ses notes, son compte parent, son historique. Les totaux de la caisse seront
+                recalculés sans eux.
                 Irréversible. Pour confirmer, tapez le matricule <strong className="font-mono">{eleve.matricule}</strong> :
               </p>
               <input className="champ font-mono" value={confirmation} onChange={(e) => setConfirmation(e.target.value)}
