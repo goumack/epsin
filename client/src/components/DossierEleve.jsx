@@ -751,7 +751,13 @@ function Finances({ eleveId, onChange }) {
       </div>
 
       {/* Tous les recus, a reimprimer ou renvoyer a la demande de la famille */}
-      {caisse && <HistoriqueRecus key={version} eleveId={eleveId} personnel />}
+      {caisse && (
+        <HistoriqueRecus key={version} eleveId={eleveId} personnel
+                         onReencaisser={(reencaisser) => {
+                           charger();
+                           if (reencaisser) { setMessageCaisse(''); setEncaisser(true); }
+                         }} />
+      )}
     </div>
   );
 }

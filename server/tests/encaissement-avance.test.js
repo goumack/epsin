@@ -89,7 +89,7 @@ describe('Avance de plusieurs mois au guichet', () => {
     const id = lots[0];
     if (!id) return;
     const { rows: avant } = await query(`SELECT COUNT(*)::int AS n FROM paiement WHERE lot = $1`, [id]);
-    const r = await api('PATCH', `/api/finances/paiements/${id}/annuler`, COMPTES.comptable, {});
+    const r = await api('PATCH', `/api/finances/paiements/${id}/annuler`, COMPTES.comptable, { motif: 'Essai' });
     expect(r.status).toBe(200);
     expect(r.body.ecritures).toBe(avant[0].n);
     const { rows } = await query(`SELECT bool_and(annule) AS tout FROM paiement WHERE lot = $1`, [id]);

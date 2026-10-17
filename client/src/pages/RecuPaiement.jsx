@@ -200,6 +200,17 @@ export default function RecuPaiement() {
           </tfoot>
         </table>
 
+        {recu.lignes.some((l) => l.annule) && (
+          <div className="mt-2 text-xs text-slate-600">
+            {recu.lignes.filter((l) => l.annule).map((l) => (
+              <p key={l.numero_recu}>
+                Ligne {l.numero_recu} annulée{l.annule_le ? ` le ${dateFr(l.annule_le)}` : ''}
+                {l.annule_par ? ` par ${l.annule_par}` : ''}{l.motif_annulation ? ` — motif : ${l.motif_annulation}` : ''}.
+              </p>
+            ))}
+          </div>
+        )}
+
         <p className="mt-4 text-sm">
           Arrêté le présent reçu à la somme de :{' '}
           <strong>{recu.total_lettres.charAt(0).toUpperCase() + recu.total_lettres.slice(1)}</strong>.

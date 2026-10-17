@@ -87,7 +87,7 @@ describe('Recu d un paiement au guichet', () => {
   });
 
   it('un paiement annule disparait de la liste du tuteur, son recu porte « annule »', async () => {
-    await api('PATCH', `/api/finances/paiements/${paiement.id}/annuler`, COMPTES.comptable, {});
+    await api('PATCH', `/api/finances/paiements/${paiement.id}/annuler`, COMPTES.comptable, { motif: 'Essai' });
     const recu = await api('GET', `/api/finances/recus/${paiement.id}`, COMPTES.comptable);
     expect(recu.body.annule).toBe(true);
     const liste = await api('GET', '/api/finances/recus', tuteur);

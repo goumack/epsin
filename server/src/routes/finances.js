@@ -462,18 +462,41 @@ router.post('/paiements', autoriser(...CAISSE), async (req, res, next) => {
 
 // Annulation (on ne supprime jamais une ecriture comptable). Une ecriture
 // d un lot annule tout le lot : c est un seul encaissement.
+//
+// `ids` (facultatif) : seulement certaines lignes du recu — le mois encaisse
+// par erreur dans un recu d inscription, sans toucher au reste. Le motif est
+// obligatoire ; qui, quand et pourquoi figurent ensuite sur le recu.
 router.patch('/paiements/:id/annuler', autoriser(...CAISSE), async (req, res, next) => {
   try {
+    const motif = String(req.body.motif || '').trim();
+    if (!motif) return res.status(400).json({ erreur: 'Indiquez le motif de l annulation' });
+    const { rows: base } = await query(
+      `SELECT id, lot, paiement_en_ligne_id FROM paiement WHERE id = $1`, [req.params.id]
+    );
+    if (!base[0]) return res.status(404).json({ erreur: 'Paiement introuvable' });
+    // Les lignes d un meme recu : paiement Wave, lot du guichet, ou ecriture seule
+    const [colonne, valeur] = base[0].paiement_en_ligne_id ? ['paiement_en_ligne_id', base[0].paiement_en_ligne_id]
+      : base[0].lot ? ['lot', base[0].lot] : ['id', base[0].id];
+    const ids = Array.isArray(req.body.ids) && req.body.ids.length ? req.body.ids.map(Number) : null;
+    if (ids) {
+      // Chaque ligne demandee doit appartenir a ce recu et ne pas etre deja annulee
+      const { rows: valides } = await query(
+        `SELECT id FROM paiement WHERE ${colonne} = $1 AND NOT annule AND id = ANY($2)`, [valeur, ids]
+      );
+      if (valides.length !== new Set(ids).size) {
+        return res.status(400).json({ erreur: 'Lignes a annuler invalides pour ce recu' });
+      }
+    }
+
     const { rows } = await query(
-      `UPDATE paiement SET annule = true
-       WHERE annule = false
-         AND (id = $1 OR lot = (SELECT lot FROM paiement WHERE id = $1 AND lot IS NOT NULL))
+      `UPDATE paiement SET annule = true, annule_le = now(), annule_par = $3, motif_annulation = $4
+       WHERE annule = false AND ${colonne} = $1 AND ($2::int[] IS NULL OR id = ANY($2))
        RETURNING *`,
-      [req.params.id]
+      [valeur, ids, req.user.id, motif]
     );
     if (!rows[0]) return res.status(404).json({ erreur: 'Paiement introuvable ou deja annule' });
     await tracer(req, 'annulation', 'paiement', Number(req.params.id), {
-      motif: req.body.motif || null, ecritures: rows.length,
+      motif, ecritures: rows.length, recus: rows.map((x) => x.numero_recu),
     });
     res.json({ message: 'Paiement annule', paiement: rows[0], ecritures: rows.length });
   } catch (err) { next(err); }
@@ -967,13 +990,15 @@ router.get('/recus', async (req, res, next) => {
     }
     const { rows } = await query(
       `SELECT MIN(p.id) AS id, MIN(p.numero_recu) AS numero_recu, COUNT(*)::int AS lignes,
-              SUM(p.montant)::numeric AS montant, MIN(p.date_paiement) AS date_paiement,
-              MIN(p.mode) AS mode, bool_or(p.annule) AS annule,
+              COALESCE(SUM(p.montant) FILTER (WHERE NOT p.annule), 0)::numeric AS montant,
+              MIN(p.date_paiement) AS date_paiement,
+              MIN(p.mode) AS mode, bool_and(p.annule) AS annule,
+              bool_or(p.annule) AND NOT bool_and(p.annule) AS annule_en_partie,
               bool_or(p.categorie = 'autres_recettes') AS autres_recettes,
               string_agg(DISTINCT f.libelle, ', ') AS frais,
               string_agg(p.mois_couvert, ',' ORDER BY p.id) AS mois,
               -- Detail du recu : chaque frais avec son mois et son montant
-              json_agg(json_build_object('frais', f.libelle, 'mois', p.mois_couvert, 'montant', p.montant)
+              json_agg(json_build_object('frais', f.libelle, 'mois', p.mois_couvert, 'montant', p.montant, 'annule', p.annule)
                        ORDER BY p.id) AS details
        FROM paiement p
        LEFT JOIN frais f ON f.id = p.frais_id
@@ -1029,6 +1054,8 @@ router.get('/recus/:id', async (req, res, next) => {
     const { rows: lignes } = await query(
       `SELECT p.id, p.numero_recu, p.montant, p.mode, p.reference, p.mois_couvert,
               p.date_paiement, p.annule, p.cree_le, p.annee_id,
+              p.annule_le, p.motif_annulation,
+              (SELECT a.prenom || ' ' || a.nom FROM utilisateur a WHERE a.id = p.annule_par) AS annule_par,
               f.libelle AS frais,
               u.prenom AS caissier_prenom, u.nom AS caissier_nom
        FROM paiement p
@@ -1090,8 +1117,9 @@ router.get('/recus/:id', async (req, res, next) => {
       reference: wave?.transaction_id || premiere.reference || null,
       annule: valides.length === 0,
       lignes: lignes.map((l) => ({
-        numero_recu: l.numero_recu, frais: l.frais, mois: l.mois_couvert,
+        id: l.id, numero_recu: l.numero_recu, frais: l.frais, mois: l.mois_couvert,
         montant: Number(l.montant), annule: l.annule,
+        annule_le: l.annule_le, annule_par: l.annule_par, motif_annulation: l.motif_annulation,
       })),
       total,
       total_lettres: montantEnLettres(total),

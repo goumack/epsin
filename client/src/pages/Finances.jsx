@@ -171,10 +171,12 @@ function Paiements() {
   useEffect(() => { charger(); }, [charger]);
 
   const annuler = async (id) => {
-    if (!window.confirm('Annuler ce paiement ? S\'il couvre plusieurs mois, tout l\'encaissement est '
-      + 'annulé. Les écritures sont conservées mais marquées annulées.')) return;
+    const motif = window.prompt('Motif de l\'annulation (obligatoire) — tout l\'encaissement de ce reçu sera '
+      + 'annulé ; les écritures restent visibles, barrées. Pour n\'annuler qu\'une ligne, passez par le dossier '
+      + 'de l\'élève → Finances → Corriger.');
+    if (!motif || !motif.trim()) return;
     try {
-      await patch(`/finances/paiements/${id}/annuler`);
+      await patch(`/finances/paiements/${id}/annuler`, { motif });
       succes('Paiement annulé');
       charger();
     } catch (e) { toastErreur(e.message); }
