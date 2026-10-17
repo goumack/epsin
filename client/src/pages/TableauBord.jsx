@@ -51,7 +51,14 @@ export default function TableauBord() {
         <Statistique
           titre="Élèves inscrits"
           valeur={effectifs.total}
-          detail={`${effectifs.garcons} garçons · ${effectifs.filles} filles`}
+          detail={effectifs.sans_classe > 0 ? (
+            <>
+              {effectifs.garcons} G · {effectifs.filles} F ·{' '}
+              <Link to="/eleves?classe=aucune" className="font-medium text-amber-600 underline">
+                {effectifs.sans_classe} sans classe
+              </Link>
+            </>
+          ) : `${effectifs.garcons} garçons · ${effectifs.filles} filles`}
           icone={Users}
           ton="info"
         />

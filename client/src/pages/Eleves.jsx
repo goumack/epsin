@@ -15,7 +15,8 @@ export default function Eleves() {
 
   const [liste, setListe] = useState(null);
   const [recherche, setRecherche] = useState('');
-  const [classeId, setClasseId] = useState('');
+  // ?classe=aucune (lien du tableau de bord) : les eleves sans classe
+  const [classeId, setClasseId] = useState(() => new URLSearchParams(window.location.search).get('classe') || '');
   // Les eleves retires de l effectif restent consultables (et restaurables)
   const [statut, setStatut] = useState('actif');
   const [page, setPage] = useState(1);
@@ -78,6 +79,7 @@ export default function Eleves() {
           onChange={(e) => setClasseId(e.target.value)}
         >
           <option value="">Toutes les classes</option>
+          <option value="aucune">Sans classe</option>
           {classes.map((c) => (
             <option key={c.id} value={c.id}>{c.libelle}</option>
           ))}

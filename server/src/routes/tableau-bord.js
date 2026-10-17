@@ -31,6 +31,18 @@ router.get('/', async (req, res, next) => {
       [annee[0].id, entite]
     );
     base.effectifs = eff[0];
+    // Eleves actifs sans classe cette annee (inscription non terminee,
+    // doublon...) : hors des inscrits, signales a part. Sans classe, ils
+    // n ont pas d entite : seuls les comptes transverses les voient.
+    if (!entite) {
+      const { rows: sc } = await query(
+        `SELECT COUNT(*)::int AS n FROM eleve e
+         WHERE e.statut = 'actif'
+           AND NOT EXISTS (SELECT 1 FROM inscription i WHERE i.eleve_id = e.id AND i.annee_id = $1)`,
+        [annee[0].id]
+      );
+      base.effectifs.sans_classe = sc[0].n;
+    }
 
     const { rows: cl } = await query(
       `SELECT COUNT(*)::int AS classes,

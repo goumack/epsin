@@ -95,7 +95,9 @@ router.get('/', async (req, res, next) => {
       params.push(`%${recherche.trim()}%`);
       conditions.push(`(e.nom ILIKE $${params.length} OR e.prenom ILIKE $${params.length} OR e.matricule ILIKE $${params.length})`);
     }
-    if (classe_id) {
+    if (classe_id === 'aucune') {
+      conditions.push('i.classe_id IS NULL');
+    } else if (classe_id) {
       params.push(Number(classe_id));
       conditions.push(`i.classe_id = $${params.length}`);
     }
