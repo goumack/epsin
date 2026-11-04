@@ -18,7 +18,7 @@ const moisLong = (m) => {
 
 /** Ajout ou modification d un membre du personnel paye. */
 function FormulaireSalarie({ salarie, ouvert, onFermer, onEnregistre }) {
-  const vide = { prenom: '', nom: '', fonction: 'Maître', cycle: 'elementaire', telephone: '', salaire_mensuel: '', actif: true };
+  const vide = { prenom: '', nom: '', fonction: 'Maître', cycle: 'elementaire', mode_paie: 'mensuel', telephone: '', salaire_mensuel: '', taux_horaire: '', actif: true };
   const [f, setF] = useState(vide);
   const [erreur, setErreur] = useState('');
   const [envoi, setEnvoi] = useState(false);
@@ -26,7 +26,11 @@ function FormulaireSalarie({ salarie, ouvert, onFermer, onEnregistre }) {
   useEffect(() => {
     if (!ouvert) return;
     setErreur('');
-    setF(salarie ? { ...salarie, telephone: salarie.telephone || '', salaire_mensuel: String(Math.round(salarie.salaire_mensuel)) } : vide);
+    setF(salarie ? {
+      ...salarie, telephone: salarie.telephone || '',
+      salaire_mensuel: Number(salarie.salaire_mensuel) ? String(Math.round(salarie.salaire_mensuel)) : '',
+      taux_horaire: salarie.taux_horaire ? String(Math.round(salarie.taux_horaire)) : '',
+    } : vide);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ouvert, salarie]);
 
@@ -36,7 +40,7 @@ function FormulaireSalarie({ salarie, ouvert, onFermer, onEnregistre }) {
     setEnvoi(true);
     setErreur('');
     try {
-      const corps = { ...f, salaire_mensuel: Number(f.salaire_mensuel) || 0 };
+      const corps = { ...f, salaire_mensuel: Number(f.salaire_mensuel) || 0, taux_horaire: f.taux_horaire === '' ? null : Number(f.taux_horaire) };
       if (salarie) await put(`/salaires/salaries/${salarie.id}`, corps);
       else await post('/salaires/salaries', corps);
       onEnregistre();
@@ -75,10 +79,26 @@ function FormulaireSalarie({ salarie, ouvert, onFermer, onEnregistre }) {
           </select>
         </div>
         <div>
-          <label className="etiquette" htmlFor="s-salaire">Salaire mensuel, fixe pour l'année (FCFA) *</label>
-          <input id="s-salaire" className="champ tabular-nums" type="number" min="0" required
-                 value={f.salaire_mensuel} onChange={maj('salaire_mensuel')} />
+          <label className="etiquette" htmlFor="s-mode">Mode de paie</label>
+          <select id="s-mode" className="champ" value={f.mode_paie} onChange={maj('mode_paie')}>
+            <option value="mensuel">Salaire mensuel fixe</option>
+            <option value="horaire">À l'heure (heures du mois × taux)</option>
+          </select>
         </div>
+        {f.mode_paie === 'horaire' ? (
+          <div>
+            <label className="etiquette" htmlFor="s-taux">Taux horaire (FCFA par heure) *</label>
+            <input id="s-taux" className="champ tabular-nums" type="number" min="1" required
+                   value={f.taux_horaire} onChange={maj('taux_horaire')} placeholder="1500" />
+            <p className="mt-1 text-xs text-slate-500">Chaque mois, on saisit les heures faites : le montant se calcule tout seul.</p>
+          </div>
+        ) : (
+          <div>
+            <label className="etiquette" htmlFor="s-salaire">Salaire mensuel, fixe pour l'année (FCFA) *</label>
+            <input id="s-salaire" className="champ tabular-nums" type="number" min="1" required
+                   value={f.salaire_mensuel} onChange={maj('salaire_mensuel')} />
+          </div>
+        )}
         {salarie && (
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={Boolean(f.actif)} onChange={maj('actif')} />
@@ -177,6 +197,16 @@ export default function Salaires() {
     if (note === null) { setMontants({ ...montants, [l.id]: String(Math.round(l.montant)) }); return; }
     action(() => put(`/salaires/paie/${l.id}`, { montant: valeur, note }));
   };
+  // Paie a l heure : les heures donnent le montant
+  const [heures, setHeures] = useState({});
+  useEffect(() => {
+    if (paie) setHeures(Object.fromEntries(paie.lignes.map((l) => [l.id, l.heures == null ? '' : String(Number(l.heures))])));
+  }, [paie]);
+  const saisirHeures = (l) => {
+    const brut = String(heures[l.id] ?? '').replace(',', '.');
+    if (brut === '' || Number(brut) === Number(l.heures)) return;
+    action(() => put(`/salaires/paie/${l.id}`, { heures: Number(brut) }));
+  };
   const annuler = (l) => {
     const motif = window.prompt(`Annuler le paiement de ${l.prenom} ${l.nom} ? La dépense sera retirée. Motif :`);
     if (motif && motif.trim()) action(() => post(`/salaires/paie/${l.id}/annuler`, { motif }));
@@ -246,13 +276,31 @@ export default function Salaires() {
                         </td>
                         <td className="hidden sm:table-cell">{l.fonction}</td>
                         <td className="text-right">
-                          {l.statut === 'a_payer' ? (
+                          {l.mode_paie === 'horaire' ? (
+                            <span className="inline-flex flex-col items-end">
+                              {l.statut === 'a_payer' ? (
+                                <span className="inline-flex items-center gap-1 text-sm">
+                                  <input inputMode="decimal" aria-label={`Heures du mois — ${l.prenom} ${l.nom}`}
+                                         className="champ w-16 py-1 text-right tabular-nums print:border-0" placeholder="h"
+                                         value={heures[l.id] ?? ''} onChange={(e) => setHeures({ ...heures, [l.id]: e.target.value })}
+                                         onBlur={() => saisirHeures(l)}
+                                         onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
+                                  <span className="text-slate-500">h × {fcfa(Number(l.taux ?? l.taux_horaire))}</span>
+                                </span>
+                              ) : (
+                                <span className="text-xs text-slate-500">{Number(l.heures).toLocaleString('fr-FR')} h × {fcfa(Number(l.taux))}</span>
+                              )}
+                              <span className={`font-semibold tabular-nums ${Number(l.montant) ? '' : 'text-slate-400'}`}>
+                                {Number(l.montant) ? fcfa(l.montant) : 'heures à saisir'}
+                              </span>
+                            </span>
+                          ) : l.statut === 'a_payer' ? (
                             <input type="number" min="0" aria-label={`Montant — ${l.prenom} ${l.nom}`}
                                    className="champ w-28 py-1 text-right tabular-nums print:border-0"
                                    value={montants[l.id] ?? ''} onChange={(e) => setMontants({ ...montants, [l.id]: e.target.value })}
                                    onBlur={() => ajuster(l)} />
                           ) : <span className="font-semibold tabular-nums">{fcfa(l.montant)}</span>}
-                          {Number(l.montant) !== Number(l.salaire_mensuel) && (
+                          {l.mode_paie !== 'horaire' && Number(l.montant) !== Number(l.salaire_mensuel) && (
                             <span className="block text-xs text-slate-400">habituel : {fcfa(l.salaire_mensuel)}</span>
                           )}
                         </td>
@@ -267,7 +315,9 @@ export default function Salaires() {
                         <td className="whitespace-nowrap text-right print:hidden">
                           {l.statut === 'a_payer' ? (
                             <>
-                              <button type="button" className="bouton-primaire px-3 py-1.5" onClick={() => setAPayer(l)}>Payer</button>
+                              <button type="button" className="bouton-primaire px-3 py-1.5" disabled={!Number(l.montant)}
+                                      title={Number(l.montant) ? '' : 'Saisissez d\'abord les heures du mois'}
+                                      onClick={() => setAPayer(l)}>Payer</button>
                               <button type="button" className="ml-2 text-xs text-slate-500 underline"
                                       onClick={() => window.confirm(`Retirer ${l.prenom} ${l.nom} de la paie de ${paie.libelle} ?`)
                                         && action(() => supprimer(`/salaires/paie/${l.id}`))}>
@@ -310,7 +360,7 @@ export default function Salaires() {
                   <span className="text-slate-500"> · {s.fonction} · {CYCLES[s.cycle] || s.cycle}{s.telephone ? ` · ${s.telephone}` : ''}</span>
                 </span>
                 {!s.actif && <Puce>Parti</Puce>}
-                <span className="tabular-nums">{fcfa(s.salaire_mensuel)} / mois</span>
+                <span className="tabular-nums">{s.mode_paie === 'horaire' ? `${fcfa(s.taux_horaire)} / heure` : `${fcfa(s.salaire_mensuel)} / mois`}</span>
                 <button type="button" className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800"
                         aria-label={`Modifier ${s.prenom} ${s.nom}`} onClick={() => setAModifier(s)}>
                   <Pencil className="h-4 w-4" />

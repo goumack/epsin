@@ -101,3 +101,43 @@ describe('Paie du mois', () => {
     expect((await api('GET', '/api/salaires/paie?mois=2026-13', COMPTES.comptable)).status).toBe(400);
   });
 });
+
+describe('Professeur paye a l heure (college)', () => {
+  let vacataire;
+  afterAll(async () => {
+    if (!vacataire) return;
+    const { rows } = await query(`SELECT depense_id FROM paie WHERE salarie_id = $1 AND depense_id IS NOT NULL`, [vacataire.id]);
+    await query(`DELETE FROM paie WHERE salarie_id = $1`, [vacataire.id]);
+    if (rows.length) await query(`DELETE FROM depense WHERE id = ANY($1)`, [rows.map((r) => r.depense_id)]);
+    await query(`DELETE FROM salarie WHERE id = $1`, [vacataire.id]);
+  });
+
+  it('taux horaire obligatoire', async () => {
+    const r = await api('POST', '/api/salaires/salaries', COMPTES.comptable,
+      { prenom: 'Sans', nom: 'Taux', fonction: 'Professeur', cycle: 'college', mode_paie: 'horaire' });
+    expect(r.status).toBe(400);
+  });
+
+  it('heures du mois x taux propre au professeur, puis paiement', async () => {
+    vacataire = (await api('POST', '/api/salaires/salaries', COMPTES.comptable, {
+      prenom: 'Cheikh', nom: 'Essai', fonction: 'Professeur de maths', cycle: 'college', mode_paie: 'horaire', taux_horaire: 1750,
+    })).body;
+    await api('POST', '/api/salaires/paie/preparer', COMPTES.comptable, { mois: MOIS });
+    let l = await ligne(vacataire);
+    expect(Number(l.montant)).toBe(0);
+    expect(Number(l.taux)).toBe(1750);
+    // Pas d heures : on ne paie pas
+    expect((await api('POST', `/api/salaires/paie/${l.id}/payer`, COMPTES.comptable, {})).status).toBe(400);
+    await api('PUT', `/api/salaires/paie/${l.id}`, COMPTES.comptable, { heures: 23.5 });
+    l = await ligne(vacataire);
+    expect(Number(l.heures)).toBe(23.5);
+    expect(Number(l.montant)).toBe(Math.round(23.5 * 1750));
+    const p = await api('POST', `/api/salaires/paie/${l.id}/payer`, COMPTES.comptable, { mode: 'especes' });
+    expect(p.status).toBe(200);
+    const { rows: [d] } = await query(`SELECT libelle FROM depense WHERE id = $1`, [p.body.depense_id]);
+    expect(d.libelle).toMatch(/Cheikh Essai \(Professeur de maths, 23,5 h\)/);
+    // Etat par cycle
+    const etat = await paie();
+    expect(etat.par_cycle.college.total).toBeGreaterThanOrEqual(Math.round(23.5 * 1750));
+  });
+});
