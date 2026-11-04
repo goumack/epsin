@@ -73,7 +73,7 @@ l'application.
 4. Déployez. Vérifiez ensuite :
 
    ```
-   https://epsin-api.onrender.com/api/sante
+   https://epsin-api-x2qn.onrender.com/api/sante
    ```
 
    Vous devez lire `{"statut":"ok",…}`.
@@ -87,10 +87,10 @@ l'application.
 
    | Variable | Valeur |
    |---|---|
-   | `VITE_API_URL` | `https://epsin-api.onrender.com` |
+   | `VITE_API_URL` | `https://epsin-api-x2qn.onrender.com` |
 
 3. Déployez, puis **revenez sur epsin-api** et renseignez `CORS_ORIGIN`
-   avec l'URL de l'interface (`https://epsin-web.onrender.com`).
+   avec l'URL de l'interface (`https://epsin-web-01aq.onrender.com`).
    Redéployez l'API pour que le changement prenne effet.
 
    > Sans cette étape, le navigateur bloquera tous les appels : l'interface
@@ -100,7 +100,7 @@ l'application.
 
 ## 5. Première connexion
 
-Ouvrez `https://epsin-web.onrender.com` et connectez-vous avec le compte
+Ouvrez `https://epsin-web-01aq.onrender.com` et connectez-vous avec le compte
 créé à l'étape 2. Puis, dans cet ordre :
 
 1. **Paramètres** — vérifiez le nom de l'établissement, l'IA et l'IEF
@@ -134,7 +134,7 @@ Pour une **confirmation automatique** (sans vérification manuelle), demandez
 à Wave l'accès à l'**API Checkout**, puis :
 
 1. dans Wave Business, créez une clé API et un **webhook** pointant vers
-   `https://epsin-api.onrender.com/api/paiements-en-ligne/wave/webhook`
+   `https://epsin-api-x2qn.onrender.com/api/paiements-en-ligne/wave/webhook`
    (événements `checkout.session.completed` et
    `checkout.session.payment_failed`) ;
 2. sur Render, renseignez `WAVE_API_KEY`, `WAVE_WEBHOOK_SECRET` et
@@ -233,7 +233,7 @@ Le fichier produit est `desktop\dist\EPSIN-Installation-1.0.0.exe`.
 
 1. Lancer `EPSIN-Installation-1.0.0.exe`, puis ouvrir **EPSIN** depuis le bureau.
 2. Choisir **Récupérer les données en ligne**.
-3. Saisir l'adresse `https://epsin-api.onrender.com` et le `SYNC_JETON`.
+3. Saisir l'adresse `https://epsin-api-x2qn.onrender.com` et le `SYNC_JETON`.
 4. Attendre la fin de la copie, qui prend quelques minutes.
 
 On se connecte ensuite avec les mêmes comptes qu'en ligne. Le badge en haut
