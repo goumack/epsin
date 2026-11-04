@@ -4,7 +4,8 @@ import { get, post, put, supprimer, fcfa, dateFr } from '../lib/api';
 import { Chargement, Erreur, Modale, Puce, Statistique, Vide } from './ui';
 
 const MODES = { especes: 'Espèces', wave: 'Wave', om: 'Orange Money', virement: 'Virement', cheque: 'Chèque' };
-const FONCTIONS = ['Maître', 'Professeur', 'Surveillant', 'Secrétaire', 'Gardien', 'Autre'];
+const FONCTIONS = ['Maître', 'Professeur', 'Principal', 'Directeur adjoint', 'Surveillant', 'Secrétaire', 'Gardien'];
+const CYCLES = { elementaire: 'Élémentaire', college: 'Collège' };
 
 const moisCourant = () => {
   const d = new Date();
@@ -17,7 +18,7 @@ const moisLong = (m) => {
 
 /** Ajout ou modification d un membre du personnel paye. */
 function FormulaireSalarie({ salarie, ouvert, onFermer, onEnregistre }) {
-  const vide = { prenom: '', nom: '', fonction: 'Maître', telephone: '', salaire_mensuel: '', actif: true };
+  const vide = { prenom: '', nom: '', fonction: 'Maître', cycle: 'elementaire', telephone: '', salaire_mensuel: '', actif: true };
   const [f, setF] = useState(vide);
   const [erreur, setErreur] = useState('');
   const [envoi, setEnvoi] = useState(false);
@@ -58,9 +59,9 @@ function FormulaireSalarie({ salarie, ouvert, onFermer, onEnregistre }) {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="etiquette" htmlFor="s-fonction">Fonction</label>
-            <select id="s-fonction" className="champ" value={f.fonction} onChange={maj('fonction')}>
-              {[...new Set([...FONCTIONS, f.fonction])].map((x) => <option key={x}>{x}</option>)}
-            </select>
+            <input id="s-fonction" className="champ" list="fonctions" value={f.fonction} onChange={maj('fonction')}
+                   placeholder="Maître, Professeur de maths…" />
+            <datalist id="fonctions">{FONCTIONS.map((x) => <option key={x} value={x} />)}</datalist>
           </div>
           <div>
             <label className="etiquette" htmlFor="s-tel">Téléphone</label>
@@ -68,7 +69,13 @@ function FormulaireSalarie({ salarie, ouvert, onFermer, onEnregistre }) {
           </div>
         </div>
         <div>
-          <label className="etiquette" htmlFor="s-salaire">Salaire mensuel (FCFA) *</label>
+          <label className="etiquette" htmlFor="s-cycle">Cycle</label>
+          <select id="s-cycle" className="champ" value={f.cycle} onChange={maj('cycle')}>
+            {Object.entries(CYCLES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="etiquette" htmlFor="s-salaire">Salaire mensuel, fixe pour l'année (FCFA) *</label>
           <input id="s-salaire" className="champ tabular-nums" type="number" min="0" required
                  value={f.salaire_mensuel} onChange={maj('salaire_mensuel')} />
         </div>
@@ -210,7 +217,16 @@ export default function Salaires() {
                       ? 'Cliquez sur « Préparer la paie » pour créer une ligne par membre du personnel.'
                       : 'Ajoutez d\'abord le personnel payé ci-dessous, avec son salaire mensuel.'} />
             ) : (
-              <div className="overflow-x-auto">
+              Object.entries(CYCLES).filter(([c]) => paie.lignes.some((l) => l.cycle === c)).map(([c, nomCycle]) => (
+              <div key={c} className="overflow-x-auto break-inside-avoid">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-slate-200 bg-slate-50 px-4 py-2 text-sm dark:border-slate-800 dark:bg-slate-800/50">
+                  <span className="font-semibold">{nomCycle}</span>
+                  <span className="text-slate-500">{paie.par_cycle?.[c]?.lignes} personne(s)</span>
+                  <span className="ml-auto tabular-nums">Total : <strong>{fcfa(paie.par_cycle?.[c]?.total || 0)}</strong></span>
+                  {paie.par_cycle?.[c]?.reste > 0 && (
+                    <span className="tabular-nums text-amber-700 dark:text-amber-400">reste à payer : {fcfa(paie.par_cycle[c].reste)}</span>
+                  )}
+                </div>
                 <table className="tableau">
                   <thead>
                     <tr>
@@ -222,7 +238,7 @@ export default function Salaires() {
                     </tr>
                   </thead>
                   <tbody>
-                    {paie.lignes.map((l) => (
+                    {paie.lignes.filter((l) => l.cycle === c).map((l) => (
                       <tr key={l.id}>
                         <td>
                           <span className="font-medium">{l.prenom} {l.nom}</span>
@@ -269,6 +285,7 @@ export default function Salaires() {
                   </tbody>
                 </table>
               </div>
+              ))
             )}
           </div>
         </>
@@ -290,7 +307,7 @@ export default function Salaires() {
               <li key={s.id} className={`flex items-center gap-3 px-4 py-2 text-sm ${s.actif ? '' : 'opacity-50'}`}>
                 <span className="min-w-0 flex-1">
                   <span className="font-medium">{s.prenom} {s.nom}</span>
-                  <span className="text-slate-500"> · {s.fonction}{s.telephone ? ` · ${s.telephone}` : ''}</span>
+                  <span className="text-slate-500"> · {s.fonction} · {CYCLES[s.cycle] || s.cycle}{s.telephone ? ` · ${s.telephone}` : ''}</span>
                 </span>
                 {!s.actif && <Puce>Parti</Puce>}
                 <span className="tabular-nums">{fcfa(s.salaire_mensuel)} / mois</span>

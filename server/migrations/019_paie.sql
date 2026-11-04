@@ -1,15 +1,17 @@
 -- ============================================================
 -- EPSIN — Paie des maitres et professeurs
 --
--- salarie : le personnel paye chaque mois (maitres, professeurs, et au
---   besoin d autres salaries), avec son salaire mensuel habituel. Il n a
---   pas besoin d un compte EPSIN ; s il en a un (enseignant), on peut le lier.
+-- salarie : le personnel paye chaque mois (maitres, professeurs,
+--   surveillants, secretaires, gardiens...), avec son salaire mensuel, fixe
+--   pour l annee. Il n a pas besoin d un compte EPSIN ; s il en a un
+--   (enseignant), on peut le lier. cycle : elementaire ou college, pour un
+--   etat de paie par cycle.
 --
 -- paie : une ligne par salarie et par mois (« 2026-11 »). Le montant part
---   du salaire habituel et s ajuste pour le mois (absence, avance, prime).
---   Le paiement cree une DEPENSE « Salaires » : la paie compte ainsi dans
---   les depenses et la synthese, sans double saisie. Annuler le paiement
---   retire cette depense.
+--   du salaire mensuel et peut s ajuster pour le mois (absence, avance),
+--   avec une note. Le paiement cree une DEPENSE « Salaires » : la paie
+--   compte ainsi dans les depenses et la synthese, sans double saisie.
+--   Annuler le paiement retire cette depense.
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS salarie (
@@ -17,11 +19,13 @@ CREATE TABLE IF NOT EXISTS salarie (
   prenom           TEXT NOT NULL,
   nom              TEXT NOT NULL,
   fonction         TEXT NOT NULL DEFAULT 'Maître',
+  cycle            TEXT NOT NULL DEFAULT 'elementaire',
   telephone        TEXT,
   salaire_mensuel  NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (salaire_mensuel >= 0),
   actif            BOOLEAN NOT NULL DEFAULT true,
   enseignant_id    INT UNIQUE REFERENCES enseignant(id) ON DELETE SET NULL,
-  cree_le          TIMESTAMPTZ NOT NULL DEFAULT now()
+  cree_le          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT salarie_cycle_valide CHECK (cycle IN ('elementaire', 'college'))
 );
 
 CREATE TABLE IF NOT EXISTS paie (

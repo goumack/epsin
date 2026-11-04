@@ -13,6 +13,7 @@ router.use(autoriser('admin', 'comptable'));
 
 const FORMAT_MOIS = /^\d{4}-(0[1-9]|1[0-2])$/;
 const MODES = ['especes', 'wave', 'om', 'virement', 'cheque'];
+const CYCLES = ['elementaire', 'college'];
 
 /** « 2026-11 » -> « novembre 2026 » */
 const moisLong = (m) => {
@@ -31,7 +32,9 @@ function lireSalarie(corps, existant = {}) {
   if (!prenom || !nom) throw erreur(400, 'Prenom et nom requis');
   if (!Number.isFinite(salaire) || salaire < 0) throw erreur(400, 'Salaire mensuel invalide');
   const actif = corps.actif !== undefined ? Boolean(corps.actif) : (existant.actif ?? true);
-  return { prenom, nom, fonction, telephone, salaire: Math.round(salaire), actif };
+  const cycle = String(corps.cycle ?? existant.cycle ?? 'elementaire');
+  if (!CYCLES.includes(cycle)) throw erreur(400, 'Cycle invalide (elementaire ou college)');
+  return { prenom, nom, fonction, telephone, salaire: Math.round(salaire), actif, cycle };
 }
 
 // ---------- Personnel paye ----------
@@ -39,7 +42,7 @@ router.get('/salaries', async (req, res, next) => {
   try {
     const { rows } = await query(
       `SELECT s.*, (SELECT COUNT(*)::int FROM paie p WHERE p.salarie_id = s.id) AS nb_paies
-       FROM salarie s ORDER BY s.actif DESC, s.fonction, s.nom, s.prenom`
+       FROM salarie s ORDER BY s.actif DESC, s.cycle DESC, s.salaire_mensuel DESC, s.nom, s.prenom`
     );
     res.json(rows);
   } catch (err) { next(err); }
@@ -49,9 +52,9 @@ router.post('/salaries', async (req, res, next) => {
   try {
     const s = lireSalarie(req.body);
     const { rows } = await query(
-      `INSERT INTO salarie (prenom, nom, fonction, telephone, salaire_mensuel, actif)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [s.prenom, s.nom, s.fonction, s.telephone, s.salaire, s.actif]
+      `INSERT INTO salarie (prenom, nom, fonction, telephone, salaire_mensuel, actif, cycle)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [s.prenom, s.nom, s.fonction, s.telephone, s.salaire, s.actif, s.cycle]
     );
     await tracer(req, 'creation', 'salarie', rows[0].id, { salaire: s.salaire });
     res.status(201).json(rows[0]);
@@ -64,9 +67,9 @@ router.put('/salaries/:id', async (req, res, next) => {
     if (!ex[0]) return res.status(404).json({ erreur: 'Salarie introuvable' });
     const s = lireSalarie(req.body, ex[0]);
     const { rows } = await query(
-      `UPDATE salarie SET prenom=$2, nom=$3, fonction=$4, telephone=$5, salaire_mensuel=$6, actif=$7
+      `UPDATE salarie SET prenom=$2, nom=$3, fonction=$4, telephone=$5, salaire_mensuel=$6, actif=$7, cycle=$8
        WHERE id = $1 RETURNING *`,
-      [req.params.id, s.prenom, s.nom, s.fonction, s.telephone, s.salaire, s.actif]
+      [req.params.id, s.prenom, s.nom, s.fonction, s.telephone, s.salaire, s.actif, s.cycle]
     );
     await tracer(req, 'modification', 'salarie', rows[0].id, { salaire: s.salaire, actif: s.actif });
     res.json(rows[0]);
@@ -83,22 +86,29 @@ router.get('/paie', async (req, res, next) => {
     const mois = String(req.query.mois || '');
     if (!FORMAT_MOIS.test(mois)) return res.status(400).json({ erreur: 'Mois invalide (AAAA-MM)' });
     const { rows: lignes } = await query(
-      `SELECT p.*, s.prenom, s.nom, s.fonction, s.telephone, s.salaire_mensuel,
+      `SELECT p.*, s.prenom, s.nom, s.fonction, s.telephone, s.salaire_mensuel, s.cycle,
               u.prenom AS paye_par_prenom, u.nom AS paye_par_nom
        FROM paie p JOIN salarie s ON s.id = p.salarie_id
        LEFT JOIN utilisateur u ON u.id = p.paye_par
-       WHERE p.mois = $1 ORDER BY s.fonction, s.nom, s.prenom`,
+       WHERE p.mois = $1 ORDER BY s.cycle DESC, s.salaire_mensuel DESC, s.nom, s.prenom`,
       [mois]
     );
     const { rows: manquants } = await query(
-      `SELECT s.id, s.prenom, s.nom, s.fonction, s.salaire_mensuel FROM salarie s
+      `SELECT s.id, s.prenom, s.nom, s.fonction, s.cycle, s.salaire_mensuel FROM salarie s
        WHERE s.actif AND NOT EXISTS (SELECT 1 FROM paie p WHERE p.salarie_id = s.id AND p.mois = $1)
        ORDER BY s.fonction, s.nom`,
       [mois]
     );
     const total = lignes.reduce((t, l) => t + Number(l.montant), 0);
     const paye = lignes.filter((l) => l.statut === 'paye').reduce((t, l) => t + Number(l.montant), 0);
-    res.json({ mois, libelle: moisLong(mois), lignes, a_preparer: manquants, total, paye, reste: total - paye });
+    // Un etat par cycle, comme sur les feuilles de paie de l ecole
+    const parCycle = Object.fromEntries(CYCLES.map((c) => {
+      const l = lignes.filter((x) => x.cycle === c);
+      const t = l.reduce((a, x) => a + Number(x.montant), 0);
+      const p = l.filter((x) => x.statut === 'paye').reduce((a, x) => a + Number(x.montant), 0);
+      return [c, { total: t, paye: p, reste: t - p, lignes: l.length }];
+    }));
+    res.json({ mois, libelle: moisLong(mois), lignes, a_preparer: manquants, total, paye, reste: total - paye, par_cycle: parCycle });
   } catch (err) { next(err); }
 });
 
