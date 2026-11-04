@@ -202,6 +202,10 @@ function ModalePaiementWave({ frais, mode, onFermer, onPaye, onErreur }) {
   const [saisie, setSaisie] = useState('');
   const [envoi, setEnvoi] = useState(false);
   const [tentative, setTentative] = useState(null);
+  // Numero Wave du payeur (mode wavepay) : retenu sur cet appareil
+  const [telephone, setTelephone] = useState(() => {
+    try { return localStorage.getItem('epsin-numero-wave') || ''; } catch { return ''; }
+  });
 
   useEffect(() => {
     if (!frais) return;
@@ -243,9 +247,13 @@ function ModalePaiementWave({ frais, mode, onFermer, onPaye, onErreur }) {
     const fenetre = mode === 'lien' ? window.open('', '_blank') : null;
     setEnvoi(true);
     try {
-      const r = await post('/paiements-en-ligne/wave', libre
-        ? { frais_id: frais.id, montant: montantLibre }
-        : { frais_id: frais.id, nb_mois: nb });
+      const numero = mode === 'wavepay' ? telephone.trim() : '';
+      const r = await post('/paiements-en-ligne/wave', {
+        frais_id: frais.id,
+        ...(libre ? { montant: montantLibre } : { nb_mois: nb }),
+        ...(numero ? { telephone: numero } : {}),
+      });
+      if (numero) { try { localStorage.setItem('epsin-numero-wave', numero); } catch { /* indisponible */ } }
       if (r.mode === 'api') {
         // Wave prend le relais, puis renvoie vers /mon-enfant?paiement=<id>
         window.location.assign(r.url);
@@ -267,7 +275,9 @@ function ModalePaiementWave({ frais, mode, onFermer, onPaye, onErreur }) {
   };
 
   let contenu;
-  if (tentative?.mode === 'lien') {
+  if (tentative?.mode === 'wavepay') {
+    contenu = <EtapeWavepay tentative={tentative} onFini={onPaye} />;
+  } else if (tentative?.mode === 'lien') {
     contenu = <EtapeLien tentative={tentative} onDeclare={onPaye} onErreur={onErreur} />;
   } else if (tentative?.mode === 'simulation') {
     contenu = <EtapeSimulation tentative={tentative} onFini={onPaye} onAnnule={onFermer} onErreur={onErreur} />;
@@ -349,6 +359,18 @@ function ModalePaiementWave({ frais, mode, onFermer, onPaye, onErreur }) {
 
         {!libre && <p className="text-center text-3xl font-semibold tabular-nums">{fcfa(total)}</p>}
 
+        {mode === 'wavepay' && (
+          <div>
+            <label className="etiquette" htmlFor="numero-wave">Votre numéro Wave (conseillé)</label>
+            <input id="numero-wave" className="champ" inputMode="tel" autoComplete="tel"
+                   placeholder="77 123 45 67" value={telephone} onChange={(e) => setTelephone(e.target.value)} />
+            <p className="mt-1 text-xs text-slate-500">
+              Le numéro qui va payer : votre paiement sera reconnu tout seul. Sans numéro, payez par QR code
+              dans les 30 minutes.
+            </p>
+          </div>
+        )}
+
         <button type="button" className="bouton-wave w-full py-3 text-base"
                 disabled={envoi || !payable} onClick={ouvrir}>
           <Smartphone className="h-5 w-5" />
@@ -364,6 +386,111 @@ function ModalePaiementWave({ frais, mode, onFermer, onPaye, onErreur }) {
     <Modale ouverte={Boolean(frais)} onFermer={onFermer} titre={`Payer — ${frais.libelle}`} taille="sm">
       {contenu}
     </Modale>
+  );
+}
+
+/** Appareil du parent : le bouton Wave n est pas le meme partout. */
+const SUR_ANDROID = typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent);
+const SUR_TELEPHONE = typeof navigator !== 'undefined' && /android|iphone|ipad|ipod/i.test(navigator.userAgent);
+
+/**
+ * WavePay, apres creation du paiement : le parent paie EXACTEMENT le montant
+ * affiche (parfois quelques francs de plus que les mois : c est ce qui
+ * permet de reconnaitre son paiement). Bouton Wave sur telephone (touche par
+ * le parent, sans ouverture automatique), QR code sur ordinateur. La page
+ * demande l etat au serveur toutes les 15 s : le paiement est confirme par
+ * WavePay, sans rien declarer.
+ */
+function EtapeWavepay({ tentative, onFini }) {
+  const [pel, setPel] = useState(null);
+  const [epuise, setEpuise] = useState(false);
+  const liens = tentative.liens || {};
+  const aPayer = tentative.montant_du || tentative.montant;
+
+  useEffect(() => {
+    let arret = false;
+    let essais = 0;
+    let minuteur;
+    const verifier = async () => {
+      try {
+        const r = await get(`/paiements-en-ligne/${tentative.id}`);
+        if (arret) return;
+        setPel(r);
+        if (!['en_attente', 'a_verifier'].includes(r.statut)) return;
+      } catch { /* on reessaie */ }
+      essais += 1;
+      // 30 minutes au plus ; au-dela, la confirmation arrivera quand meme
+      if (essais >= 120) { setEpuise(true); return; }
+      minuteur = setTimeout(verifier, 15000);
+    };
+    minuteur = setTimeout(verifier, 5000);
+    return () => { arret = true; clearTimeout(minuteur); };
+  }, [tentative.id]);
+
+  if (pel?.statut === 'reussi') {
+    return (
+      <div className="space-y-3 text-center">
+        <CheckCircle2 className="mx-auto h-12 w-12 text-emerald-500" />
+        <p className="text-lg font-semibold">Paiement reçu. Merci !</p>
+        {pel.recus?.length > 0 && (
+          <p className="text-sm text-slate-500">
+            Reçu{pel.recus.length > 1 ? 's' : ''} : {pel.recus.map((x) => `${x.numero_recu} (${libelleMois(x.mois)})`).join(' · ')}
+          </p>
+        )}
+        <button type="button" className="bouton-primaire w-full" onClick={() => onFini?.(pel)}>Terminer</button>
+      </div>
+    );
+  }
+  if (pel && ['echoue', 'expire', 'rejete'].includes(pel.statut)) {
+    return (
+      <div className="space-y-2 text-center text-sm">
+        <XCircle className="mx-auto h-10 w-10 text-slate-400" />
+        <p>{pel.statut === 'expire' ? 'Le délai pour payer est dépassé.' : 'Ce paiement a été annulé.'} Aucun montant n'a été enregistré.</p>
+        <button type="button" className="bouton-secondaire w-full" onClick={() => onFini?.(pel)}>Fermer</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4 text-center">
+      <div>
+        <p className="text-sm text-slate-500">Montant exact à payer</p>
+        <p className="text-4xl font-bold tabular-nums">{fcfa(aPayer)}</p>
+        {Number(aPayer) > Number(tentative.montant) && (
+          <p className="mt-1 text-xs text-slate-500">
+            {fcfa(Number(aPayer) - Number(tentative.montant))} de plus que les mois : c'est ce qui permet de
+            reconnaître votre paiement. Payez exactement ce montant.
+          </p>
+        )}
+      </div>
+
+      {SUR_TELEPHONE ? (
+        <a href={(SUR_ANDROID && liens.android_intent_url) || liens.pay_url || liens.checkout_url}
+           className="bouton-wave inline-flex w-full justify-center py-3 text-base">
+          <Smartphone className="h-5 w-5" /> Ouvrir Wave et payer
+        </a>
+      ) : (
+        <div className="space-y-2">
+          {liens.qr_code_url && (
+            <img src={liens.qr_code_url} alt="QR code du paiement Wave"
+                 className="mx-auto h-56 w-56 rounded-lg border border-slate-200 bg-white p-2" />
+          )}
+          <p className="text-sm text-slate-500">Scannez ce code avec l'application Wave de votre téléphone.</p>
+        </div>
+      )}
+      {liens.checkout_url && (
+        <a href={liens.checkout_url} target="_blank" rel="noopener noreferrer" className="block text-xs text-marine-600 underline">
+          Ouvrir la page de paiement
+        </a>
+      )}
+
+      <p className="flex items-center justify-center gap-2 text-sm text-slate-500" role="status">
+        <Clock className="h-4 w-4" />
+        {epuise
+          ? 'Toujours pas de confirmation. Si vous avez payé, elle arrivera sous peu ; sinon, contactez le secrétariat.'
+          : 'En attente de votre paiement… la confirmation est automatique.'}
+      </p>
+    </div>
   );
 }
 

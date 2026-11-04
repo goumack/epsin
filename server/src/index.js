@@ -18,7 +18,7 @@ import tableauBordRoutes from './routes/tableau-bord.js';
 import personnelRoutes from './routes/personnel.js';
 import parcoursRoutes from './routes/parcours.js';
 import modulesRoutes from './routes/modules.js';
-import paiementsEnLigneRoutes, { webhookWave } from './routes/paiements-en-ligne.js';
+import paiementsEnLigneRoutes, { webhookWave, webhookWavepay } from './routes/paiements-en-ligne.js';
 import { routesServeur, routesPoste } from './routes/synchronisation.js';
 import { pool } from './db/pool.js';
 import { demarrerSynchroAuto, distantHttp } from './sync/poste.js';
@@ -55,6 +55,8 @@ app.use(cors({ origin: process.env.CORS_ORIGIN?.split(',') || '*' }));
 // recu avant que express.json() ne le transforme.
 app.post('/api/paiements-en-ligne/wave/webhook',
   express.raw({ type: '*/*', limit: '100kb' }), webhookWave);
+app.post('/api/paiements-en-ligne/wavepay/webhook',
+  express.raw({ type: '*/*', limit: '100kb' }), webhookWavepay);
 
 // Synchronisation avec le poste de l ecole : les envois peuvent etre gros
 app.use('/api/sync', express.json({ limit: '50mb' }), routesServeur);

@@ -11,6 +11,8 @@ import {
   waveConfigure, modePaiement, lienAvecMontant,
   creerSession, lireSession, signatureValide,
 } from '../services/wave.js';
+import { creerPaiementWavepay, construireEvenement } from '../services/wavepay.js';
+import { normaliserTelephone } from '../metier/telephone.js';
 
 /**
  * Paiement des mensualites en ligne par le tuteur, via Wave.
@@ -352,17 +354,51 @@ router.post('/wave', autoriser('parent'), async (req, res, next) => {
       }
     }
 
+    // Numero Wave du payeur (conseille par WavePay : la confirmation est
+    // alors liee au bon payeur). Sans numero : paiement par QR code.
+    const brut = String(req.body.telephone || '').trim();
+    const telephone = brut ? normaliserTelephone(brut) : null;
+    if (brut && !telephone) {
+      return res.status(400).json({ erreur: 'Numero Wave invalide : un mobile senegalais (77, 76, 78, 75, 70) a 9 chiffres' });
+    }
+
     const base = urlInterface();
     if (mode === 'api' && !base) {
       return res.status(500).json({ erreur: 'APP_URL non configuree sur le serveur' });
     }
 
     const { rows } = await query(
-      `INSERT INTO paiement_en_ligne (mode, eleve_id, frais_id, annee_id, nb_mois, montant, initie_par)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [mode, eleveId, f.id, annee.id, nbMois, montant, req.user.id]
+      `INSERT INTO paiement_en_ligne (mode, eleve_id, frais_id, annee_id, nb_mois, montant, initie_par, telephone_payeur)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [mode, eleveId, f.id, annee.id, nbMois, montant, req.user.id, telephone]
     );
     const pel = rows[0];
+
+    if (mode === 'wavepay') {
+      // WavePay cree le paiement et le confirmera seul (webhook signe)
+      try {
+        const p = await creerPaiementWavepay({
+          demandeId: pel.id, montant, telephone, parentId: req.user.id,
+          description: `${f.libelle} — ${nbMois} mois`,
+        });
+        const liens = {
+          checkout_url: p.checkout_url, pay_url: p.pay_url,
+          android_intent_url: p.android_intent_url, qr_code_url: p.qr_code_url,
+        };
+        await query(
+          `UPDATE paiement_en_ligne SET session_id = $2, montant_du = $3, url_paiement = $4,
+                  liens = $5, expire_le = $6 WHERE id = $1`,
+          [pel.id, p.id, p.amount_due, p.checkout_url, liens, p.expires_at || null]
+        );
+        await tracer(req, 'ouverture_paiement_wave', 'paiement_en_ligne', pel.id, { montant, mode, wavepay: p.id });
+        return res.status(201).json({
+          id: pel.id, montant, montant_du: Number(p.amount_due), mode, url: p.checkout_url, liens,
+        });
+      } catch (err) {
+        await cloreSansPaiement(pel.id, 'echoue', err.message);
+        throw err;
+      }
+    }
 
     if (mode !== 'api') {
       // Lien marchand : le tuteur paie sur Wave puis declare sa transaction.
@@ -614,6 +650,67 @@ export async function webhookWave(req, res) {
     res.json({ recu: true });
   } catch (err) {
     console.error('[wave] echec du traitement du webhook', err.message);
+    res.status(500).json({ erreur: 'Traitement impossible, a renvoyer' });
+  }
+}
+
+/**
+ * Webhook WavePay. Monte HORS du routeur authentifie et AVANT express.json() :
+ * la signature X-Signature porte sur le corps brut. Seul payment.succeeded
+ * valide un paiement ; chaque evenement n est traite qu une fois.
+ *
+ * Repond 2xx vite ; une erreur 500 fait renvoyer l evenement par WavePay
+ * (reessais pendant environ 3 jours), ce qui est voulu.
+ */
+export async function webhookWavepay(req, res) {
+  const secret = process.env.WAVEPAY_WEBHOOK_SECRET;
+  if (!secret) return res.status(503).json({ erreur: 'Webhook WavePay non configure' });
+
+  let evenement;
+  try {
+    if (!Buffer.isBuffer(req.body)) throw new Error('Corps absent');
+    evenement = construireEvenement(req.body, req.get('X-Signature'), secret);
+  } catch {
+    return res.status(400).json({ erreur: 'Signature invalide' });
+  }
+
+  try {
+    const { rows: deja } = await query(`SELECT 1 FROM wavepay_evenement WHERE id = $1`, [evenement.id]);
+    if (deja[0]) return res.json({ recu: true, deja_traite: true });
+
+    const p = evenement?.data?.payment || {};
+    const reference = Number(p.metadata?.paiement_en_ligne_id) || null;
+    const { rows } = await query(
+      `SELECT id, montant FROM paiement_en_ligne
+       WHERE mode = 'wavepay' AND (session_id = $1 OR id = $2) LIMIT 1`,
+      [p.id || null, reference]
+    );
+    const pel = rows[0];
+    if (!pel) {
+      // Paiement de l autre application du meme compte, ou inconnu : ignore
+      console.warn('[wavepay] evenement pour un paiement inconnu', p.id);
+    } else if (evenement.type === 'payment.succeeded') {
+      // Le parent a paye amount_due (parfois quelques francs de plus, pour
+      // distinguer deux paiements simultanes) : on impute le montant des
+      // mois demandes. Un succeeded apres un expired l emporte.
+      await confirmerPaiement(pel.id, {
+        transactionId: evenement.data.transaction?.id || p.id,
+        montantRecu: Number(pel.montant),
+      });
+    } else if (evenement.type === 'payment.expired') {
+      await cloreSansPaiement(pel.id, 'expire', null, ['en_attente', 'a_verifier']);
+    } else if (evenement.type === 'payment.canceled') {
+      await cloreSansPaiement(pel.id, 'echoue',
+        evenement.data.reason === 'duplicate' ? 'Remplace par un paiement plus recent' : 'Annule',
+        ['en_attente', 'a_verifier']);
+    }
+    await query(
+      `INSERT INTO wavepay_evenement (id, type) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
+      [evenement.id, evenement.type]
+    );
+    res.json({ recu: true });
+  } catch (err) {
+    console.error('[wavepay] echec du traitement du webhook', err.message);
     res.status(500).json({ erreur: 'Traitement impossible, a renvoyer' });
   }
 }

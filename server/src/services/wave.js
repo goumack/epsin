@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { wavepayConfigure } from './wavepay.js';
 
 /**
  * Client de l API Checkout de Wave (https://docs.wave.com/checkout).
@@ -29,12 +30,14 @@ export function lienMarchand() {
 
 /**
  * Mode de paiement en vigueur, par ordre de preference :
+ *   'wavepay'     API WavePay : confirmation automatique par webhook signe
  *   'api'         cle API : confirmation automatique
  *   'lien'        lien marchand : verification par la caisse
  *   'simulation'  ni l un ni l autre, hors production
  *   null          rien de configure en production : paiement indisponible
  */
 export function modePaiement() {
+  if (wavepayConfigure()) return 'wavepay';
   if (waveConfigure()) return 'api';
   if (lienMarchand()) return 'lien';
   if (process.env.NODE_ENV !== 'production') return 'simulation';
