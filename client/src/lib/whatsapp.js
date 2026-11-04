@@ -9,7 +9,7 @@
 export const NUMERO_ENVOI = '77 219 77 73';
 
 /** Site des parents : jamais l adresse locale du poste de l ecole. */
-const SITE_EN_LIGNE = 'https://epsin-web-01aq.onrender.com';
+const SITE_EN_LIGNE = 'https://epsin.onrender.com';
 
 export function adressePublique() {
   const origine = window.location.origin;

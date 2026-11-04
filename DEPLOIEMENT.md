@@ -90,7 +90,7 @@ l'application.
    | `VITE_API_URL` | `https://epsin-api-x2qn.onrender.com` |
 
 3. Déployez, puis **revenez sur epsin-api** et renseignez `CORS_ORIGIN`
-   avec l'URL de l'interface (`https://epsin-web-01aq.onrender.com`).
+   avec l'URL de l'interface (`https://epsin.onrender.com`).
    Redéployez l'API pour que le changement prenne effet.
 
    > Sans cette étape, le navigateur bloquera tous les appels : l'interface
@@ -100,7 +100,7 @@ l'application.
 
 ## 5. Première connexion
 
-Ouvrez `https://epsin-web-01aq.onrender.com` et connectez-vous avec le compte
+Ouvrez `https://epsin.onrender.com` et connectez-vous avec le compte
 créé à l'étape 2. Puis, dans cet ordre :
 
 1. **Paramètres** — vérifiez le nom de l'établissement, l'IA et l'IEF
