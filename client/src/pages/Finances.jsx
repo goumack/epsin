@@ -12,6 +12,7 @@ import {
 import { STATUTS_PAIEMENT, libelleMois } from '../components/PaiementWave';
 import SuiviMois from '../components/SuiviMois';
 import MatricePaiements from '../components/MatricePaiements';
+import Salaires from '../components/Salaires';
 
 const MODES = {
   especes: 'Espèces', wave: 'Wave', om: 'Orange Money',
@@ -32,6 +33,7 @@ export default function Finances() {
           { cle: 'wave', libelle: 'Wave à vérifier' },
           { cle: 'impayes', libelle: 'Impayés' },
           { cle: 'depenses', libelle: 'Dépenses' },
+          { cle: 'salaires', libelle: 'Salaires' },
           { cle: 'frais', libelle: 'Barème des frais' },
         ]}
         actif={onglet}
@@ -44,6 +46,7 @@ export default function Finances() {
       {onglet === 'wave' && <VerificationWave />}
       {onglet === 'impayes' && <Impayes />}
       {onglet === 'depenses' && <Depenses />}
+      {onglet === 'salaires' && <Salaires />}
       {onglet === 'frais' && <Frais />}
     </div>
   );
