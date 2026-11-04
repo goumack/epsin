@@ -6,6 +6,8 @@ import { Chargement, Erreur, Modale, Puce, Statistique, Vide } from './ui';
 const MODES = { especes: 'Espèces', wave: 'Wave', om: 'Orange Money', virement: 'Virement', cheque: 'Chèque' };
 const FONCTIONS = ['Maître', 'Professeur', 'Principal', 'Directeur adjoint', 'Surveillant', 'Secrétaire', 'Gardien'];
 const CYCLES = { elementaire: 'Élémentaire', college: 'Collège' };
+// Taux horaires des professeurs du college
+const TAUX = ['1500', '1750', '2000'];
 
 const moisCourant = () => {
   const d = new Date();
@@ -87,9 +89,19 @@ function FormulaireSalarie({ salarie, ouvert, onFermer, onEnregistre }) {
         </div>
         {f.mode_paie === 'horaire' ? (
           <div>
-            <label className="etiquette" htmlFor="s-taux">Taux horaire (FCFA par heure) *</label>
-            <input id="s-taux" className="champ tabular-nums" type="number" min="1" required
-                   value={f.taux_horaire} onChange={maj('taux_horaire')} placeholder="1500" />
+            <label className="etiquette" htmlFor="s-taux">Taux horaire *</label>
+            {/* Les taux de l ecole ; « Autre » pour un cas particulier */}
+            <select id="s-taux" className="champ" required
+                    value={TAUX.includes(String(f.taux_horaire)) ? String(f.taux_horaire) : (f.taux_horaire === '' ? '' : 'autre')}
+                    onChange={(e) => setF({ ...f, taux_horaire: e.target.value === 'autre' ? '0' : e.target.value })}>
+              <option value="" disabled>Choisir le taux</option>
+              {TAUX.map((t) => <option key={t} value={t}>{Number(t).toLocaleString('fr-FR')} F de l'heure</option>)}
+              <option value="autre">Autre taux…</option>
+            </select>
+            {f.taux_horaire !== '' && !TAUX.includes(String(f.taux_horaire)) && (
+              <input className="champ mt-2 tabular-nums" type="number" min="1" required aria-label="Autre taux horaire"
+                     value={f.taux_horaire === '0' ? '' : f.taux_horaire} onChange={maj('taux_horaire')} placeholder="Taux en FCFA par heure" />
+            )}
             <p className="mt-1 text-xs text-slate-500">Chaque mois, on saisit les heures faites : le montant se calcule tout seul.</p>
           </div>
         ) : (
