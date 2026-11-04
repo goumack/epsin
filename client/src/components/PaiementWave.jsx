@@ -383,7 +383,8 @@ function ModalePaiementWave({ frais, mode, onFermer, onPaye, onErreur }) {
   }
 
   return (
-    <Modale ouverte={Boolean(frais)} onFermer={onFermer} titre={`Payer — ${frais.libelle}`} taille="sm">
+    <Modale ouverte={Boolean(frais)} titre={`Payer — ${frais.libelle}`} taille="sm"
+            onFermer={tentative?.mode === 'wavepay' ? () => onPaye?.() : onFermer}>
       {contenu}
     </Modale>
   );

@@ -453,7 +453,7 @@ function Finances({ eleveId, paiementRetour, fermerRetour }) {
 
       <MensualitesWave
         key={version}
-        onPaye={() => { chargerSituation(); succes('Paiement transmis'); }}
+        onPaye={() => { chargerSituation(); setVersion((v) => v + 1); succes('Paiement transmis'); }}
         onErreur={erreur}
       />
       <HistoriqueRecus key={`recus-${version}`} titre="Mes reçus de paiement" />
