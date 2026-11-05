@@ -5,15 +5,21 @@ import { authentifier, autoriser, tracer } from '../middleware/auth.js';
 const router = Router();
 router.use(authentifier);
 
+// Le personnel : tous les comptes de l ecole sauf eleves et parents
+const CHEFS = ['admin', 'censeur', 'directeur', 'proviseur'];
+const PERSONNEL = [...CHEFS, 'comptable', 'enseignant'];
+const CIBLES = ['tous', 'personnel', 'enseignants', 'eleves', 'parents'];
+
 // ---------- Annonces ----------
 router.get('/annonces', async (req, res, next) => {
   try {
     // Chaque utilisateur ne voit que les annonces qui le concernent
     const cibles = ['tous'];
+    if (PERSONNEL.includes(req.user.role)) cibles.push('personnel');
     if (['eleve'].includes(req.user.role)) cibles.push('eleves');
     if (['parent'].includes(req.user.role)) cibles.push('parents');
     if (['enseignant'].includes(req.user.role)) cibles.push('enseignants');
-    const voitTout = ['admin', 'censeur'].includes(req.user.role);
+    const voitTout = CHEFS.includes(req.user.role);
 
     const { rows } = await query(
       `SELECT a.*, u.prenom, u.nom, c.libelle AS classe
@@ -28,10 +34,11 @@ router.get('/annonces', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/annonces', autoriser('admin', 'censeur', 'enseignant'), async (req, res, next) => {
+router.post('/annonces', autoriser(...CHEFS, 'enseignant'), async (req, res, next) => {
   try {
     const { titre, contenu, cible, classe_id, epingle } = req.body;
     if (!titre || !contenu) return res.status(400).json({ erreur: 'Titre et contenu requis' });
+    if (cible && !CIBLES.includes(cible)) return res.status(400).json({ erreur: 'Destinataires inconnus' });
 
     const { rows } = await query(
       `INSERT INTO annonce (titre, contenu, auteur_id, cible, classe_id, epingle)
@@ -42,14 +49,15 @@ router.post('/annonces', autoriser('admin', 'censeur', 'enseignant'), async (req
     // Notification aux destinataires concernes
     await query(
       `INSERT INTO notification (utilisateur_id, type, titre, contenu, lien)
-       SELECT u.id, 'annonce', $1, LEFT($2, 120), '/annonces'
+       SELECT u.id, 'annonce', $1, LEFT($2, 120), '/communication'
        FROM utilisateur u
        WHERE u.actif AND u.id <> $3
          AND ($4 = 'tous'
+              OR ($4 = 'personnel' AND u.role::text = ANY($5))
               OR ($4 = 'enseignants' AND u.role = 'enseignant')
               OR ($4 = 'eleves' AND u.role = 'eleve')
               OR ($4 = 'parents' AND u.role = 'parent'))`,
-      [titre, contenu, req.user.id, cible || 'tous']
+      [titre, contenu, req.user.id, cible || 'tous', PERSONNEL]
     );
     await tracer(req, 'publication', 'annonce', rows[0].id);
     res.status(201).json(rows[0]);
@@ -87,17 +95,26 @@ router.post('/messages', async (req, res, next) => {
     if (!destinataire_id || !contenu) {
       return res.status(400).json({ erreur: 'Destinataire et contenu requis' });
     }
+    // « personnel » : un message a chaque membre du personnel actif
+    const groupe = destinataire_id === 'personnel';
+    if (groupe && !PERSONNEL.includes(req.user.role)) {
+      return res.status(403).json({ erreur: 'Envoi au personnel reserve au personnel' });
+    }
     const { rows } = await query(
       `INSERT INTO message (expediteur_id, destinataire_id, objet, contenu)
-       VALUES ($1,$2,$3,$4) RETURNING *`,
-      [req.user.id, destinataire_id, objet || null, contenu]
+       SELECT $1, u.id, $3, $4 FROM utilisateur u
+       WHERE u.actif AND u.id <> $1
+         AND (CASE WHEN $5 THEN u.role::text = ANY($6) ELSE u.id::text = $2 END)
+       RETURNING *`,
+      [req.user.id, String(destinataire_id), objet || null, contenu, groupe, PERSONNEL]
     );
+    if (!rows.length) return res.status(404).json({ erreur: 'Destinataire introuvable' });
     await query(
       `INSERT INTO notification (utilisateur_id, type, titre, contenu, lien)
-       VALUES ($1,'message',$2,LEFT($3,120),'/messages')`,
-      [destinataire_id, `Message de ${req.user.prenom} ${req.user.nom}`, contenu]
+       SELECT d, 'message', $2, LEFT($3,120), '/communication' FROM unnest($1::int[]) AS d`,
+      [rows.map((m) => m.destinataire_id), `Message de ${req.user.prenom} ${req.user.nom}`, contenu]
     );
-    res.status(201).json(rows[0]);
+    res.status(201).json(groupe ? { envoyes: rows.length } : rows[0]);
   } catch (err) { next(err); }
 });
 

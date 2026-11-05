@@ -6,6 +6,11 @@ import {
   Chargement, Vide, Modale, Puce, Onglets, useToast,
 } from '../components/ui';
 
+const PERSONNEL = ['admin', 'censeur', 'directeur', 'proviseur', 'comptable', 'enseignant'];
+const LIBELLES_CIBLE = {
+  tous: 'Tout le monde', personnel: 'Personnel', enseignants: 'Enseignants', eleves: 'Élèves', parents: 'Parents',
+};
+
 export default function Communication() {
   const [onglet, setOnglet] = useState('annonces');
   return (
@@ -50,7 +55,7 @@ function Annonces() {
   return (
     <div className="space-y-4">
       <Toast />
-      {aRole('admin', 'censeur', 'enseignant') && (
+      {aRole('admin', 'censeur', 'directeur', 'proviseur', 'enseignant') && (
         <div className="flex justify-end">
           <button onClick={() => setOuvert(true)} className="bouton-primaire">
             <Plus className="h-4 w-4" /> Nouvelle annonce
@@ -67,7 +72,7 @@ function Annonces() {
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 {a.epingle && <Pin className="h-4 w-4 text-marine-600" />}
                 <h3 className="font-semibold">{a.titre}</h3>
-                <Puce ton="info">{a.cible}</Puce>
+                <Puce ton="info">{LIBELLES_CIBLE[a.cible] || a.cible}</Puce>
                 <span className="ml-auto text-xs text-slate-400">
                   {new Date(a.publie_le).toLocaleDateString('fr-FR', {
                     day: '2-digit', month: 'long', year: 'numeric',
@@ -97,6 +102,7 @@ function Annonces() {
             <label className="etiquette">Destinataires</label>
             <select className="champ" value={f.cible} onChange={(e) => setF({ ...f, cible: e.target.value })}>
               <option value="tous">Tout le monde</option>
+              <option value="personnel">Tout le personnel</option>
               <option value="enseignants">Enseignants</option>
               <option value="eleves">Élèves</option>
               <option value="parents">Parents</option>
@@ -117,7 +123,7 @@ function Annonces() {
 }
 
 function Messages() {
-  const { utilisateur } = useAuth();
+  const { utilisateur, aRole } = useAuth();
   const { Toast, succes, erreur: toastErreur } = useToast();
   const [liste, setListe] = useState(null);
   const [contacts, setContacts] = useState([]);
@@ -136,10 +142,13 @@ function Messages() {
   const soumettre = async (e) => {
     e.preventDefault();
     try {
-      await post('/communication/messages', { ...f, destinataire_id: Number(f.destinataire_id) });
+      const groupe = f.destinataire_id === 'personnel';
+      const r = await post('/communication/messages', {
+        ...f, destinataire_id: groupe ? 'personnel' : Number(f.destinataire_id),
+      });
       setOuvert(false);
       setF({ destinataire_id: '', objet: '', contenu: '' });
-      succes('Message envoyé');
+      succes(groupe ? `Message envoyé à ${r.envoyes} membres du personnel` : 'Message envoyé');
       charger();
     } catch (err) { toastErreur(err.message); }
   };
@@ -200,6 +209,7 @@ function Messages() {
             <label className="etiquette">Destinataire *</label>
             <select className="champ" value={f.destinataire_id} onChange={(e) => setF({ ...f, destinataire_id: e.target.value })} required>
               <option value="">Choisir…</option>
+              {aRole(...PERSONNEL) && <option value="personnel">Tout le personnel</option>}
               {contacts.map((c) => (
                 <option key={c.id} value={c.id}>{c.prenom} {c.nom} ({c.role})</option>
               ))}
