@@ -147,11 +147,21 @@ describe('Webhook', () => {
     // Montant impute : celui des mois demandes, pas les francs d identification
     const { rows: [t] } = await query(`SELECT SUM(montant)::numeric AS s FROM paiement WHERE paiement_en_ligne_id = $1`, [d]);
     expect(Number(t.s)).toBe(Number((await etat(d)).montant));
+    // Le comptable et l admin sont prevenus
+    const notifs = async () => (await query(
+      `SELECT u.role FROM notification n JOIN utilisateur u ON u.id = n.utilisateur_id
+       WHERE n.titre = 'Paiement Wave recu'`
+    )).rows;
+    const roles = (await notifs()).map((r) => r.role);
+    expect(roles).toContain('comptable');
+    expect(roles).toContain('admin');
+    const avant = roles.length;
     // Rejoue : rien de plus
     const r2 = await webhook(ev);
     expect(r2.status).toBe(200);
     const n2 = (await query(`SELECT COUNT(*)::int AS n FROM paiement WHERE paiement_en_ligne_id = $1`, [d])).rows[0].n;
     expect(n2).toBe(n1);
+    expect((await notifs()).length).toBe(avant);
   });
 
   it('payment.expired puis payment.succeeded : le paiement l emporte', async () => {

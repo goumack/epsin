@@ -190,6 +190,27 @@ export async function confirmerPaiement(id, {
            + `. Recu(s) : ${recus.join(', ')}`]
       );
     }
+    // Paiement confirme automatiquement (WavePay / Nangu, API Wave) : la
+    // caisse est prevenue de l argent recu. Quand c est elle qui valide, elle
+    // le sait deja.
+    if (!verifiePar) {
+      const { rows: [el] } = await client.query(
+        `SELECT e.prenom, e.nom, e.matricule, c.libelle AS classe FROM eleve e
+         LEFT JOIN inscription i ON i.eleve_id = e.id AND i.annee_id = $2
+         LEFT JOIN classe c ON c.id = i.classe_id
+         WHERE e.id = $1`,
+        [pel.eleve_id, pel.annee_id]
+      );
+      await client.query(
+        `INSERT INTO notification (utilisateur_id, type, titre, contenu, lien)
+         SELECT u.id, 'paiement', 'Paiement Wave recu', $1, '/finances'
+         FROM utilisateur u WHERE u.actif AND u.role IN ('comptable', 'admin')`,
+        [`${el ? `${el.prenom} ${el.nom} (${el.matricule}${el.classe ? `, ${el.classe}` : ''})` : 'Un eleve'} : `
+          + `${Math.round(versement)} FCFA payes par Wave`
+          + (moisCouverts.length ? ` (${moisCouverts.join(', ')})` : '')
+          + `. Recu(s) : ${recus.join(', ')}`]
+      );
+    }
     return { pel: maj[0], deja: false };
   });
 }
