@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Plus, Send, Pin, Mail, MailOpen } from 'lucide-react';
 import { get, post, patch } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
@@ -12,7 +13,10 @@ const LIBELLES_CIBLE = {
 };
 
 export default function Communication() {
-  const [onglet, setOnglet] = useState('annonces');
+  // L onglet suit l adresse : une notification de message ouvre la messagerie
+  const [params, setParams] = useSearchParams();
+  const onglet = params.get('onglet') === 'messages' ? 'messages' : 'annonces';
+  const setOnglet = (o) => setParams(o === 'messages' ? { onglet: o } : {}, { replace: true });
   return (
     <div className="animer space-y-4">
       <Onglets

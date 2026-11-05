@@ -9,6 +9,13 @@ import { useAuth } from '../context/AuthContext';
 import IndicateurSynchro from '../components/IndicateurSynchro';
 import { get, patch } from '../lib/api';
 
+/** Page ouverte par une notification (anciens liens compris). */
+function destination(lien) {
+  if (!lien || lien === '/annonces') return '/communication';
+  if (lien === '/messages') return '/communication?onglet=messages';
+  return lien;
+}
+
 /** Chaque entree declare les roles autorises a la voir. */
 // Le directeur (elementaire) et le proviseur (moyen/secondaire) ont les memes
 // ecrans que le censeur ; le serveur limite ce qu ils y voient a leur entite.
@@ -87,12 +94,22 @@ export default function Layout() {
     navigate('/connexion');
   };
 
-  const marquerLues = async () => {
+  // Panneau des notifications : la liste, chacune menant a sa page
+  const [panneau, setPanneau] = useState(null);
+  const ouvrirPanneau = async () => {
+    if (panneau) { setPanneau(null); return; }
     try {
-      await patch('/communication/notifications/tout-lu');
-      setNonLues(0);
-    } catch { /* ignore */ }
-    navigate('/communication');
+      const d = await get('/communication/notifications');
+      setPanneau(d.notifications || []);
+      if (d.non_lues) {
+        await patch('/communication/notifications/tout-lu');
+        setNonLues(0);
+      }
+    } catch { setPanneau([]); }
+  };
+  const ouvrirNotification = (n) => {
+    setPanneau(null);
+    navigate(destination(n.lien));
   };
 
   return (
@@ -195,18 +212,45 @@ export default function Layout() {
           <div className="ml-auto flex items-center gap-1">
             {/* Poste de l ecole uniquement : etat de la synchronisation */}
             <IndicateurSynchro />
-            <button
-              onClick={marquerLues}
-              className="relative rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
-              aria-label="Notifications"
-            >
-              <Bell className="h-5 w-5" />
-              {nonLues > 0 && (
-                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold text-white">
-                  {nonLues > 9 ? '9+' : nonLues}
-                </span>
+            <div className="relative">
+              <button
+                onClick={ouvrirPanneau}
+                className="relative rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+                aria-label="Notifications"
+              >
+                <Bell className="h-5 w-5" />
+                {nonLues > 0 && (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold text-white">
+                    {nonLues > 9 ? '9+' : nonLues}
+                  </span>
+                )}
+              </button>
+              {panneau && (
+                <>
+                  <div className="fixed inset-0 z-30" onClick={() => setPanneau(null)} />
+                  <div className="fixed inset-x-4 top-16 z-40 max-h-[70vh] overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900 sm:absolute sm:inset-x-auto sm:right-0 sm:top-11 sm:w-96">
+                    <p className="border-b border-slate-100 px-4 py-2.5 text-sm font-semibold dark:border-slate-800">Notifications</p>
+                    {panneau.length === 0 ? (
+                      <p className="px-4 py-6 text-center text-sm text-slate-400">Aucune notification</p>
+                    ) : panneau.map((n) => (
+                      <button
+                        key={n.id}
+                        onClick={() => ouvrirNotification(n)}
+                        className={`block w-full border-b border-slate-100 px-4 py-3 text-left last:border-0 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50 ${
+                          n.lu ? '' : 'bg-marine-50/60 dark:bg-marine-950/20'
+                        }`}
+                      >
+                        <p className={`text-sm ${n.lu ? 'font-medium' : 'font-semibold'}`}>{n.titre}</p>
+                        {n.contenu && <p className="mt-0.5 line-clamp-2 text-sm text-slate-500">{n.contenu}</p>}
+                        <p className="mt-1 text-xs text-slate-400">
+                          {new Date(n.cree_le).toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                </>
               )}
-            </button>
+            </div>
             <button
               onClick={() => setSombre((s) => !s)}
               className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"

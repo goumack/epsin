@@ -44,7 +44,10 @@ describe('Communication au personnel', () => {
     expect(r.status).toBe(201);
     expect(r.body.envoyes).toBeGreaterThan(1);
 
-    const roles = await rolesNotifies('n.contenu = $1');
+    const roles = (await query(
+      `SELECT DISTINCT u.role::text AS role FROM notification n JOIN utilisateur u ON u.id = n.utilisateur_id
+       WHERE n.contenu = $1 AND n.lien = '/communication?onglet=messages'`, [MARQUE]
+    )).rows.map((x) => x.role);
     expect(roles).toEqual(expect.arrayContaining(['comptable', 'enseignant']));
     expect(roles).not.toContain('parent');
 

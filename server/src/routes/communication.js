@@ -111,7 +111,7 @@ router.post('/messages', async (req, res, next) => {
     if (!rows.length) return res.status(404).json({ erreur: 'Destinataire introuvable' });
     await query(
       `INSERT INTO notification (utilisateur_id, type, titre, contenu, lien)
-       SELECT d, 'message', $2, LEFT($3,120), '/communication' FROM unnest($1::int[]) AS d`,
+       SELECT d, 'message', $2, LEFT($3,120), '/communication?onglet=messages' FROM unnest($1::int[]) AS d`,
       [rows.map((m) => m.destinataire_id), `Message de ${req.user.prenom} ${req.user.nom}`, contenu]
     );
     res.status(201).json(groupe ? { envoyes: rows.length } : rows[0]);
