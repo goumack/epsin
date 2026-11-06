@@ -290,9 +290,17 @@ export function Transport() {
 }
 
 // ============ Utilisateurs ============
+const LIBELLES_ROLE = {
+  admin: 'Administrateur', directeur: 'Directeur', proviseur: 'Principal', censeur: 'Censeur',
+  comptable: 'Comptable', enseignant: 'Enseignant', parent: 'Parent', eleve: 'Élève',
+};
+
 export function Utilisateurs() {
   const { Toast, succes, erreur: toastErreur } = useToast();
   const [liste, setListe] = useState(null);
+  const [recherche, setRecherche] = useState('');
+  const [role, setRole] = useState('');
+  const [etat, setEtat] = useState('');
   const [ouvert, setOuvert] = useState(false);
   const [f, setF] = useState({ prenom: '', nom: '', email: '', telephone: '', role: 'enseignant', mot_de_passe: '', specialite: '', entite: 'scolaire' });
 
@@ -329,17 +337,51 @@ export function Utilisateurs() {
     } catch (e) { toastErreur(e.message); }
   };
 
+  // Recherche sans accents ni majuscules : « mariene sene » trouve « Mariéme Sène »
+  const sansAccent = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const parRole = (liste || []).reduce((t, u) => ({ ...t, [u.role]: (t[u.role] || 0) + 1 }), {});
+  const mots = sansAccent(recherche).split(/\s+/).filter(Boolean);
+  const affiches = (liste || []).filter((u) => {
+    if (role && u.role !== role) return false;
+    if (etat === 'actif' && !u.actif) return false;
+    if (etat === 'inactif' && u.actif) return false;
+    if (etat === 'jamais' && u.derniere_connexion) return false;
+    const texte = sansAccent(`${u.prenom} ${u.nom} ${u.email || ''} ${u.telephone || ''}`);
+    return mots.every((m) => texte.includes(m));
+  });
+
   return (
     <div className="animer space-y-4">
       <Toast />
-      <div className="flex justify-end">
-        <button onClick={() => setOuvert(true)} className="bouton-primaire">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+        <div className="flex-1 sm:max-w-xs">
+          <Recherche valeur={recherche} onChange={setRecherche} placeholder="Nom, email, téléphone…" />
+        </div>
+        <select className="champ sm:w-48" value={role} onChange={(e) => setRole(e.target.value)} aria-label="Rôle">
+          <option value="">Tous les rôles ({liste?.length ?? 0})</option>
+          {Object.keys(LIBELLES_ROLE).filter((r) => parRole[r]).map((r) => (
+            <option key={r} value={r}>{LIBELLES_ROLE[r]} ({parRole[r]})</option>
+          ))}
+        </select>
+        <select className="champ sm:w-48" value={etat} onChange={(e) => setEtat(e.target.value)} aria-label="État">
+          <option value="">Tous les états</option>
+          <option value="actif">Actifs</option>
+          <option value="inactif">Désactivés</option>
+          <option value="jamais">Jamais connectés</option>
+        </select>
+        <button onClick={() => setOuvert(true)} className="bouton-primaire sm:ml-auto">
           <Plus className="h-4 w-4" /> Nouveau compte
         </button>
       </div>
+      {liste && (
+        <p className="text-sm text-slate-500">
+          {affiches.length} compte{affiches.length > 1 ? 's' : ''}
+          {affiches.length !== liste.length && ` sur ${liste.length}`}
+        </p>
+      )}
 
       <div className="carte overflow-hidden">
-        {!liste ? <Chargement /> : liste.length === 0 ? <Vide titre="Aucun utilisateur" /> : (
+        {!liste ? <Chargement /> : affiches.length === 0 ? <Vide titre="Aucun utilisateur" /> : (
           <div className="overflow-x-auto">
             <table className="tableau">
               <thead>
@@ -353,11 +395,11 @@ export function Utilisateurs() {
                 </tr>
               </thead>
               <tbody>
-                {liste.map((u) => (
+                {affiches.map((u) => (
                   <tr key={u.id}>
                     <td className="font-medium">{u.prenom} {u.nom}</td>
                     <td className="hidden sm:table-cell text-slate-500">{u.email || u.telephone}</td>
-                    <td><Puce ton={u.role === 'admin' ? 'info' : 'neutre'}>{u.role}</Puce></td>
+                    <td><Puce ton={u.role === 'admin' ? 'info' : 'neutre'}>{LIBELLES_ROLE[u.role] || u.role}</Puce></td>
                     <td className="hidden md:table-cell text-slate-500">
                       {u.derniere_connexion ? dateFr(u.derniere_connexion) : 'Jamais'}
                     </td>
@@ -405,8 +447,8 @@ export function Utilisateurs() {
           <div>
             <label className="etiquette">Rôle *</label>
             <select className="champ" value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}>
-              {['admin', 'censeur', 'comptable', 'enseignant', 'eleve', 'parent'].map((r) => (
-                <option key={r} value={r}>{r}</option>
+              {['admin', 'directeur', 'proviseur', 'censeur', 'comptable', 'enseignant', 'eleve', 'parent'].map((r) => (
+                <option key={r} value={r}>{LIBELLES_ROLE[r]}</option>
               ))}
             </select>
           </div>
