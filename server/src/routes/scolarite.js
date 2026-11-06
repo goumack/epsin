@@ -634,8 +634,15 @@ router.get('/enseignants', async (req, res, next) => {
     const { rows } = await query(
       `SELECT en.*, u.prenom, u.nom, u.email, u.telephone, u.photo_url, u.actif,
               COALESCE(json_agg(DISTINCT jsonb_build_object(
-                'classe', c.libelle, 'matiere', m.libelle))
-                FILTER (WHERE a.id IS NOT NULL), '[]') AS affectations
+                'id', a.id, 'classe_id', c.id, 'classe', c.libelle,
+                'matiere_id', m.id, 'matiere', m.libelle))
+                FILTER (WHERE a.id IS NOT NULL), '[]') AS affectations,
+              -- Elementaire : classes dont il est le maitre titulaire
+              (SELECT COALESCE(json_agg(json_build_object('classe_id', c2.id, 'classe', c2.libelle)
+                                        ORDER BY c2.libelle), '[]')
+               FROM classe_maitre cm JOIN classe c2 ON c2.id = cm.classe_id
+               WHERE cm.enseignant_id = en.id
+                 AND cm.annee_id = (SELECT id FROM annee_scolaire WHERE active LIMIT 1)) AS classes_maitre
        FROM enseignant en
        JOIN utilisateur u ON u.id = en.utilisateur_id
        LEFT JOIN affectation a ON a.enseignant_id = en.id
@@ -829,6 +836,44 @@ router.post('/enseignants', autoriser(...DIRECTION), async (req, res, next) => {
   } catch (err) {
     if (err.code === '23505') {
       return res.status(409).json({ erreur: 'Cet email ou ce telephone est deja utilise par un compte' });
+    }
+    next(err);
+  }
+});
+
+/** Corrige la fiche d un enseignant : nom, prenom, specialite, telephone. */
+router.patch('/enseignants/:id', autoriser(...DIRECTION), async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT en.entite, en.utilisateur_id FROM enseignant en WHERE en.id = $1`, [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ erreur: 'Enseignant introuvable' });
+    if (!accesAutorise(req.user, rows[0].entite)) {
+      return res.status(403).json({ erreur: 'Cet enseignant releve de l autre entite' });
+    }
+    const texte = (v) => (v === undefined ? undefined : String(v).trim());
+    const prenom = texte(req.body.prenom);
+    const nom = texte(req.body.nom);
+    if (prenom === '' || nom === '') return res.status(400).json({ erreur: 'Prenom et nom requis' });
+    const telephone = texte(req.body.telephone);
+
+    await transaction(async (client) => {
+      await client.query(
+        `UPDATE utilisateur SET prenom = COALESCE($2, prenom), nom = COALESCE($3, nom),
+                telephone = CASE WHEN $4::boolean THEN NULLIF($5, '') ELSE telephone END
+         WHERE id = $1`,
+        [rows[0].utilisateur_id, prenom ?? null, nom ?? null, telephone !== undefined, telephone ?? null]
+      );
+      if (req.body.specialite !== undefined) {
+        await client.query(`UPDATE enseignant SET specialite = NULLIF($2, '') WHERE id = $1`,
+          [req.params.id, texte(req.body.specialite)]);
+      }
+    });
+    await tracer(req, 'modification_enseignant', 'utilisateur', rows[0].utilisateur_id);
+    res.json({ message: 'Fiche enregistree' });
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ erreur: 'Ce telephone est deja utilise par un compte' });
     }
     next(err);
   }

@@ -7,6 +7,7 @@ import {
 } from '../components/ui';
 import DossierClasse from '../components/DossierClasse';
 import FicheAcces from '../components/FicheAcces';
+import GestionEnseignant from '../components/GestionEnseignant';
 import FinAnnee from './FinAnnee';
 
 export default function Classes() {
@@ -437,6 +438,9 @@ function Enseignants() {
   const [fiche, setFiche] = useState(null);
   // La direction cree et gere les comptes de ses enseignants
   const direction = aRole('admin', 'directeur', 'proviseur');
+  // Affecter aux classes : la direction et le censeur
+  const gestion = direction || aRole('censeur');
+  const [modifie, setModifie] = useState(null);   // id de l enseignant en cours de modification
 
   const charger = useCallback(() => {
     get('/scolarite/enseignants').then(setListe).catch(() => setListe([]));
@@ -482,10 +486,14 @@ function Enseignants() {
                   <p className="truncate text-xs text-slate-400">{e.email || e.telephone}</p>
                 </div>
               </div>
-              {e.affectations?.length > 0 ? (
+              {e.classes_maitre?.length > 0 ? (
                 <div className="flex flex-wrap gap-1.5">
-                  {e.affectations.slice(0, 4).map((a, i) => (
-                    <Puce key={i}>{a.classe} · {a.matiere}</Puce>
+                  {e.classes_maitre.map((c) => <Puce key={c.classe_id} ton="info">Maître du {c.classe}</Puce>)}
+                </div>
+              ) : e.affectations?.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {e.affectations.slice(0, 4).map((a) => (
+                    <Puce key={a.id}>{a.classe} · {a.matiere}</Puce>
                   ))}
                   {e.affectations.length > 4 && (
                     <Puce ton="info">+{e.affectations.length - 4}</Puce>
@@ -493,19 +501,35 @@ function Enseignants() {
                 </div>
               ) : (
                 <p className="text-xs text-slate-400">
-                  Aucune classe : affectez-le depuis le dossier d'une classe (onglet Équipe pédagogique).
+                  Aucune classe{gestion ? ' : cliquez sur « Modifier » pour l\'affecter.' : '.'}
                 </p>
               )}
-              {direction && (
-                <button type="button" onClick={() => nouvelleFiche(e)}
-                        className="mt-3 text-xs text-slate-500 underline">
-                  Nouvelle fiche d'accès
-                </button>
+              {gestion && (
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <button type="button" onClick={() => setModifie(e.id)} className="bouton-secondaire px-3 py-1.5 text-sm">
+                    <Pencil className="h-3.5 w-3.5" /> Modifier
+                  </button>
+                  {direction && (
+                    <button type="button" onClick={() => nouvelleFiche(e)}
+                            className="text-xs text-slate-500 underline">
+                      Nouvelle fiche d'accès
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           ))}
         </div>
       )}
+
+      <GestionEnseignant
+        enseignant={liste?.find((e) => e.id === modifie)}
+        direction={direction}
+        onFermer={() => setModifie(null)}
+        onChange={charger}
+        onSucces={succes}
+        onErreur={erreur}
+      />
 
       <FormulaireEnseignant
         ouvert={formOuvert}
